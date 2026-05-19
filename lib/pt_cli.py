@@ -31,6 +31,53 @@ def cmd_mine(args):
     print(f"wrote {out}")
 
 
+def cmd_judge(args):
+    import json
+    from pathlib import Path
+    from lib.transcript_scanner import iter_turns
+    from lib.label_miner import session_id_from_path
+    from lib.llm_judge import judge_turn
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    spent = 0.0
+    count = 0
+    HAIKU_PER_CALL = 0.0015
+
+    with out.open("w") as f:
+        for p in Path(args.transcripts).rglob("*.jsonl"):
+            sid = session_id_from_path(p)
+            try:
+                turns = list(iter_turns(p, max_text_chars=4000))
+            except Exception:
+                continue
+            for i, t in enumerate(turns):
+                if t["role"] != "assistant" or i == 0:
+                    continue
+                prior_user = turns[i-1]
+                if prior_user["role"] != "user":
+                    continue
+                if spent + HAIKU_PER_CALL > args.budget_usd:
+                    print(f"budget cap hit at ${spent:.2f}; stopping")
+                    return
+                if count >= args.max_turns:
+                    return
+                result = judge_turn(prior_user["text"], t["text"])
+                spent += HAIKU_PER_CALL
+                count += 1
+                if result.get("label"):
+                    f.write(json.dumps({
+                        "session_id": sid,
+                        "session_path": str(p),
+                        "turn_idx": i,
+                        "label": result["label"],
+                        "evidence_quote": result["evidence_quote"],
+                        "confidence": result["confidence"],
+                        "source": "llm_judge",
+                    }) + "\n")
+    print(f"judged {count} turns, ${spent:.2f}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="pt")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -41,6 +88,12 @@ def main():
     m.add_argument("--transcripts", default=str(Path.home() / ".claude" / "projects"))
     m.add_argument("--out", default="data/labels.jsonl")
     m.set_defaults(func=cmd_mine)
+    j = sub.add_parser("judge")
+    j.add_argument("--transcripts", default=str(Path.home() / ".claude" / "projects"))
+    j.add_argument("--out", default="data/labels_judge.jsonl")
+    j.add_argument("--budget-usd", type=float, default=5.0)
+    j.add_argument("--max-turns", type=int, default=5000)
+    j.set_defaults(func=cmd_judge)
     args = p.parse_args()
     args.func(args)
 
