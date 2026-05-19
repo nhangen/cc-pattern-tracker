@@ -78,6 +78,43 @@ def cmd_judge(args):
     print(f"judged {count} turns, ${spent:.2f}")
 
 
+def cmd_export(args):
+    """Concatenate phrase + judge label files (when both exist), dedupe by
+    (session_id, turn_idx), then join."""
+    import json, tempfile
+    from datetime import datetime
+    from pathlib import Path
+    from lib.join_features_labels import join_to_parquet
+
+    combined = Path(tempfile.mkstemp(suffix=".jsonl")[1])
+    seen = set()
+    with combined.open("w") as out:
+        for src in [args.labels_phrase, args.labels_judge]:
+            p = Path(src)
+            if not p.exists():
+                continue
+            for line in p.read_text().splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                key = (row.get("session_id"), row.get("turn_idx"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if "ts" in row and "ts_epoch" not in row:
+                    try:
+                        row["ts_epoch"] = int(datetime.fromisoformat(row["ts"].replace("Z","+00:00")).timestamp())
+                    except Exception:
+                        row["ts_epoch"] = None
+                out.write(json.dumps(row) + "\n")
+
+    join_to_parquet(
+        events_db=Path(args.db), store_db=Path(args.store),
+        labels=combined, out=Path(args.out),
+    )
+    print(f"wrote {args.out}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="pt")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -94,6 +131,13 @@ def main():
     j.add_argument("--budget-usd", type=float, default=5.0)
     j.add_argument("--max-turns", type=int, default=5000)
     j.set_defaults(func=cmd_judge)
+    e = sub.add_parser("export")
+    e.add_argument("--db", default="data/events.db")
+    e.add_argument("--store", default=str(Path.home() / ".claude" / "__store.db"))
+    e.add_argument("--labels-phrase", default="data/labels.jsonl")
+    e.add_argument("--labels-judge",  default="data/labels_judge.jsonl")
+    e.add_argument("--out", default="data/exports/tuples.parquet")
+    e.set_defaults(func=cmd_export)
     args = p.parse_args()
     args.func(args)
 
