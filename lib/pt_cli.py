@@ -115,6 +115,14 @@ def cmd_export(args):
     print(f"wrote {args.out}")
 
 
+def cmd_report(args):
+    import pandas as pd
+    from lib.correlate import top_correlations
+    df = pd.read_parquet(args.parquet)
+    for r in top_correlations(df, min_support=args.min_support):
+        print(f"{r['feature']:40s} → {r['label']:35s} support={r['support']:4d}  rate={r['rate']:.2f}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="pt")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -138,6 +146,10 @@ def main():
     e.add_argument("--labels-judge",  default="data/labels_judge.jsonl")
     e.add_argument("--out", default="data/exports/tuples.parquet")
     e.set_defaults(func=cmd_export)
+    r = sub.add_parser("report")
+    r.add_argument("--parquet", default="data/exports/tuples.parquet")
+    r.add_argument("--min-support", type=int, default=10)
+    r.set_defaults(func=cmd_report)
     args = p.parse_args()
     args.func(args)
 
