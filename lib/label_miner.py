@@ -4,6 +4,23 @@ from typing import Iterator
 from lib.transcript_scanner import iter_turns
 from lib.correction_detector import classify_correction
 
+# Markers that indicate system/skill-injected content in a user turn, not actual
+# user input. Skip these for label mining — they're noise, not corrections.
+INJECTION_MARKERS = (
+    "Base directory for this skill:",
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+    "<system-reminder>",
+    "<task-notification>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+)
+
+
+def _is_injection(text: str) -> bool:
+    return any(m in text for m in INJECTION_MARKERS)
+
 def session_id_from_path(p: Path) -> str:
     """Derive the parent session_id used by events.db from a JSONL path.
 
@@ -25,16 +42,20 @@ def mine_transcript(path: Path) -> Iterator[dict]:
     for i, t in enumerate(turns):
         if t["role"] != "user":
             continue
+        if _is_injection(t["text"]):
+            continue
+        prior = turns[i - 1] if i > 0 and turns[i - 1]["role"] == "assistant" else None
+        if prior is None:
+            continue
         label = classify_correction(t["text"])
         if not label:
             continue
-        prior = turns[i - 1] if i > 0 and turns[i - 1]["role"] == "assistant" else None
         yield {
             "session_path": str(path),
             "turn_idx": i,
             "label": label,
             "correction_text": t["text"],
-            "prior_assistant_text": (prior or {}).get("text", ""),
+            "prior_assistant_text": prior["text"],
             "ts": t.get("ts"),
         }
 
