@@ -1,0 +1,5 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"help me fix the bug in foo.py"}]},"timestamp":"2026-05-01T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll @-tag the maintainer for review."}]},"timestamp":"2026-05-01T10:01:00Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"stop tagging people unless I tell you to"}]},"timestamp":"2026-05-01T10:02:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Got it, removed."}]},"timestamp":"2026-05-01T10:03:00Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"thanks"}]},"timestamp":"2026-05-01T10:04:00Z"}
