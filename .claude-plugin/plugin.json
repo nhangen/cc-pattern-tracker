@@ -2,9 +2,9 @@
   "name": "pattern-tracker",
   "version": "0.1.0",
   "description": "Logs feature + outcome rows per tool call to SQLite for offline pattern mining.",
-  "author": "nhangen",
-  "hooks": {
-    "PreToolUse": [{"command": "hooks/pre-tool-snapshot.sh"}],
-    "PostToolUse": [{"command": "hooks/post-tool-outcome.sh"}]
-  }
+  "author": {
+    "name": "nhangen"
+  },
+  "license": "MIT",
+  "keywords": ["analytics", "ml", "training-data", "hooks"]
 }
