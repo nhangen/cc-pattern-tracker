@@ -83,6 +83,26 @@ def test_finding_add_rejects_missing_required(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
 
 
+def test_pr_review_panel_emit_contract(tmp_path):
+    """Contract fixture pinning the exact field set pr-review-panel emits.
+
+    A schema rename or required-field addition here MUST fail this test and
+    force a coordinated edit to home/.claude/skills/pr-review-panel/SKILL.md
+    in the llm-tools repo. Without this fixture, pattern-tracker can drift
+    away from the producer SKILL silently."""
+    db = tmp_path / "events.db"
+    fixture = Path(__file__).parent / "fixtures" / "pr-review-panel-emit.jsonl"
+    out = _run("finding-add", "--db", str(db), "--from-file", str(fixture))
+    n_lines = sum(1 for line in fixture.read_text().splitlines() if line.strip())
+    assert f"inserted={n_lines}" in out.stdout, f"fixture rejected: {out.stdout} {out.stderr}"
+    assert "invalid=0" in out.stdout
+    conn = sqlite3.connect(db)
+    severities = {row[0] for row in conn.execute("SELECT severity FROM findings")}
+    assert severities == {"BLOCKER", "HIGH", "MEDIUM", "LOW"}
+    categories = {row[0] for row in conn.execute("SELECT category FROM findings")}
+    assert categories == {"silent-failure", "convention", "design"}
+
+
 def test_finding_add_rejects_unknown_severity(tmp_path):
     """Producer-side typo on severity must be rejected at CLI, not stored as
     a polluting free-text value that breaks WHERE severity = 'HIGH' reports."""
