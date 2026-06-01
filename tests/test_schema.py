@@ -24,3 +24,25 @@ def test_indexes_exist(tmp_path):
     idxs = {row[1] for row in db.execute("PRAGMA index_list(events)")}
     assert any("session_id" in i for i in idxs)
     assert any("timestamp" in i for i in idxs)
+
+
+def test_findings_table_has_required_columns(tmp_path):
+    db = sqlite3.connect(tmp_path / "test.db")
+    db.executescript(SCHEMA.read_text())
+    cols = {row[1] for row in db.execute("PRAGMA table_info(findings)")}
+    required = {
+        "finding_id", "pr_url", "session_id", "ts", "severity",
+        "category", "file_path", "line_no", "summary", "evidence",
+        "panel_variant", "source",
+    }
+    missing = required - cols
+    assert not missing, f"missing columns: {missing}"
+
+
+def test_findings_indexes_exist(tmp_path):
+    db = sqlite3.connect(tmp_path / "test.db")
+    db.executescript(SCHEMA.read_text())
+    idxs = {row[1] for row in db.execute("PRAGMA index_list(findings)")}
+    assert any("pr_url" in i for i in idxs)
+    assert any("session_id" in i for i in idxs)
+    assert any("severity" in i for i in idxs)

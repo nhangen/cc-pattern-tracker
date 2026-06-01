@@ -21,3 +21,22 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_tool_name  ON events(tool_name);
+
+CREATE TABLE IF NOT EXISTS findings (
+  finding_id     TEXT PRIMARY KEY,
+  pr_url         TEXT NOT NULL,
+  session_id     TEXT,
+  ts             INTEGER NOT NULL,
+  severity       TEXT NOT NULL,
+  category       TEXT,
+  file_path      TEXT,
+  line_no        INTEGER,
+  summary        TEXT NOT NULL,
+  evidence       TEXT,
+  panel_variant  TEXT,
+  source         TEXT NOT NULL DEFAULT 'pr-review-panel'
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_pr_url     ON findings(pr_url);
+CREATE INDEX IF NOT EXISTS idx_findings_session_id ON findings(session_id);
+CREATE INDEX IF NOT EXISTS idx_findings_severity   ON findings(severity);
