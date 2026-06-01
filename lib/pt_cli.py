@@ -310,6 +310,9 @@ def main():
     fe.add_argument("--out", default="data/exports/findings.jsonl")
     fe.set_defaults(func=cmd_findings_export)
 
+    from lib.cost_by_failure import register as register_cost_by_failure
+    register_cost_by_failure(sub)
+
     args = p.parse_args()
     args.func(args)
 

@@ -86,9 +86,69 @@ pt judge   [--budget-usd N]    # LLM-judge pass → labels_judge.jsonl (cost-bou
            [--max-turns N]
 pt export  [--out F.parquet]   # Join events + __store.db + both label files → parquet
 pt report  [--min-support N]   # Top feature→label correlations from parquet
+pt finding-add [--from-file F] # Ingest pr-review-panel findings (JSONL via stdin/--json/--from-file)
+pt findings-export [--out F]   # Dump findings table to JSONL
+pt cost-by-failure             # Join findings to token-scope per-session cost
+   [--by category|severity]    #   group by findings.category (default) or severity
+   [--top-sessions N]          #   alternate: list top N sessions by attributed cost
+   [--since Nh|Nd|Nw]          #   limit to recent findings
+   [--store PATH]              #   override ~/.claude/__store.db
 ```
 
 All commands default to project-relative `data/` paths.
+
+## T3 — Cost-by-Failure Fusion
+
+`pt cost-by-failure` answers questions like:
+
+- Which failure categories are most expensive to debug?
+- What's the cost difference between HIGH-severity and LOW-severity findings?
+- Which sessions racked up the most cost while accumulating review findings?
+
+It joins the `findings` table (from `pt finding-add`, populated by the
+`pr-review-panel` skill at runtime via `$CLAUDE_SESSION_ID`) to token-scope's
+per-session token + cost data in `~/.claude/__store.db`, on `session_id`.
+
+The token-scope store is ATTACHed read-only. Set `TOKEN_SCOPE_DB` or pass
+`--store` to point at a different `__store.db`.
+
+```text
+$ pt cost-by-failure
+category                      findings  sessions      tokens    cost_usd
+------------------------------------------------------------------------------
+concurrency                          2         1      42.34M  $  21.1379
+    ↳ 8-parallel test passes on broken sync
+test-quality                         1         1      42.34M  $  21.1379
+    ↳ expected built from same primitive
+style                                2         2       1.92M  $   1.1041
+    ↳ trailing whitespace
+safety-invariant                     2         2       1.38M  $   0.8472
+    ↳ auditor framed as verifier not discoverer
+
+unattributable: 1 finding(s) with NULL session_id, 1 finding(s) with session
+not present in store (__store.db)
+```
+
+### Cost dedup semantics
+
+A session's token + cost total is counted **once per (group, session) pair**.
+If session A has three findings in `category=concurrency`, the category's
+total picks up session A's cost once, not three times. If the same session
+has one finding in each of two different categories, both categories pick up
+its cost — that's a real signal (the same session contributed to both
+failure modes).
+
+### Unattributable findings
+
+Two classes of findings can't be joined and are surfaced in a footer rather
+than silently dropped:
+
+- **NULL session_id** — finding ingested without `$CLAUDE_SESSION_ID` set.
+- **Orphan session_id** — finding's session isn't present in the store
+  (e.g. the store was cleaned, or the session was from a different machine).
+
+If you see these, decide whether to backfill or accept the gap; the
+fusion view will not lie about coverage.
 
 ## Install
 
