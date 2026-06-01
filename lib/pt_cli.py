@@ -147,13 +147,25 @@ def cmd_report(args):
 
 
 REQUIRED_FINDING_FIELDS = ("pr_url", "severity", "summary")
+ALLOWED_SEVERITY = ("BLOCKER", "HIGH", "MEDIUM", "LOW")
 
 
 def _validate_finding(row: dict) -> str | None:
     for f in REQUIRED_FINDING_FIELDS:
         if not row.get(f):
             return f"missing required field: {f}"
+    if row["severity"] not in ALLOWED_SEVERITY:
+        return (
+            f"unknown severity {row['severity']!r}; "
+            f"expected one of {ALLOWED_SEVERITY}"
+        )
     return None
+
+
+def _normalize_category(raw):
+    if raw is None:
+        return None
+    return raw.strip().lower().replace("_", "-")
 
 
 def cmd_finding_add(args):
@@ -216,7 +228,7 @@ def cmd_finding_add(args):
                     sid,
                     int(row.get("ts") or time.time()),
                     row["severity"],
-                    row.get("category"),
+                    _normalize_category(row.get("category")),
                     row.get("file_path"),
                     row.get("line_no"),
                     row["summary"],

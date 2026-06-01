@@ -83,6 +83,31 @@ def test_finding_add_rejects_missing_required(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
 
 
+def test_finding_add_rejects_unknown_severity(tmp_path):
+    """Producer-side typo on severity must be rejected at CLI, not stored as
+    a polluting free-text value that breaks WHERE severity = 'HIGH' reports."""
+    db = tmp_path / "events.db"
+    bad = json.dumps({"pr_url": "https://x", "severity": "Strong", "summary": "typo"}) + "\n"
+    out = _run("finding-add", "--db", str(db), stdin=bad)
+    assert "invalid=1" in out.stdout
+    assert "severity" in out.stderr.lower()
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
+
+
+def test_finding_add_normalizes_category(tmp_path):
+    """category drift (silent-failure vs silent_failure) is silent in free-text
+    columns. Normalize underscores->hyphens and lowercase at ingest."""
+    db = tmp_path / "events.db"
+    finding = json.dumps({
+        "pr_url": "https://x/1", "severity": "HIGH", "summary": "norm",
+        "category": "Silent_Failure",
+    }) + "\n"
+    _run("finding-add", "--db", str(db), stdin=finding)
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT category FROM findings").fetchone()[0] == "silent-failure"
+
+
 def test_finding_add_warns_when_session_id_unset(tmp_path, monkeypatch):
     """When neither the row nor $CLAUDE_SESSION_ID provides a session_id,
     surface a stderr warning and tally — silent NULL session_id breaks the
