@@ -1,9 +1,26 @@
-"""pt CLI: pt summary, pt mine, pt export."""
+"""pt CLI: pt summary, pt mine, pt export, pt finding-add, pt findings-export."""
 import argparse
+import hashlib
 import json
+import os
 import sqlite3
+import sys
+import time
 from pathlib import Path
 from lib.label_miner import mine_dir
+
+SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+
+def _ensure_schema(db: sqlite3.Connection) -> None:
+    db.executescript(SCHEMA_PATH.read_text())
+
+
+def _finding_id(row: dict) -> str:
+    """Deterministic ID from (pr_url, file_path, line_no, summary) so the
+    same finding can't be ingested twice from re-runs of the same panel."""
+    key = f"{row.get('pr_url','')}|{row.get('file_path','')}|{row.get('line_no','')}|{row.get('summary','')}"
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 
 def cmd_summary(args):
@@ -129,6 +146,90 @@ def cmd_report(args):
         print(f"{r['feature']:40s} → {r['label']:35s} support={r['support']:4d}  rate={r['rate']:.2f}")
 
 
+REQUIRED_FINDING_FIELDS = ("pr_url", "severity", "summary")
+
+
+def _validate_finding(row: dict) -> str | None:
+    for f in REQUIRED_FINDING_FIELDS:
+        if not row.get(f):
+            return f"missing required field: {f}"
+    return None
+
+
+def cmd_finding_add(args):
+    """Ingest pr-review-panel findings into the findings table.
+
+    Input: JSONL on stdin (one finding per line) OR a single --json string OR
+    --from-file path. Each row must have pr_url, severity, summary; optional
+    session_id, category, file_path, line_no, evidence, panel_variant, ts.
+
+    Re-runs of the same panel collide deterministically on finding_id, so
+    ingest is idempotent via INSERT OR IGNORE.
+    """
+    db = sqlite3.connect(args.db)
+    _ensure_schema(db)
+
+    if args.json:
+        rows = [json.loads(args.json)]
+    elif args.from_file:
+        rows = [json.loads(line) for line in Path(args.from_file).read_text().splitlines() if line.strip()]
+    else:
+        rows = [json.loads(line) for line in sys.stdin if line.strip()]
+
+    session_id_default = os.environ.get("CLAUDE_SESSION_ID")
+    inserted = skipped = invalid = 0
+    for row in rows:
+        err = _validate_finding(row)
+        if err:
+            print(f"  skip (invalid): {err}", file=sys.stderr)
+            invalid += 1
+            continue
+        cur = db.execute(
+            "INSERT OR IGNORE INTO findings "
+            "(finding_id, pr_url, session_id, ts, severity, category, "
+            " file_path, line_no, summary, evidence, panel_variant, source) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                _finding_id(row),
+                row["pr_url"],
+                row.get("session_id") or session_id_default,
+                int(row.get("ts") or time.time()),
+                row["severity"],
+                row.get("category"),
+                row.get("file_path"),
+                row.get("line_no"),
+                row["summary"],
+                row.get("evidence"),
+                row.get("panel_variant"),
+                row.get("source", "pr-review-panel"),
+            ),
+        )
+        if cur.rowcount:
+            inserted += 1
+        else:
+            skipped += 1
+    db.commit()
+    print(f"inserted={inserted} skipped_dup={skipped} invalid={invalid}")
+
+
+def cmd_findings_export(args):
+    """Dump findings as JSONL for downstream cost-failure fusion."""
+    db = sqlite3.connect(args.db)
+    _ensure_schema(db)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cols = [
+        "finding_id", "pr_url", "session_id", "ts", "severity", "category",
+        "file_path", "line_no", "summary", "evidence", "panel_variant", "source",
+    ]
+    n = 0
+    with out.open("w") as f:
+        for row in db.execute(f"SELECT {','.join(cols)} FROM findings ORDER BY ts ASC"):
+            f.write(json.dumps(dict(zip(cols, row))) + "\n")
+            n += 1
+    print(f"wrote {n} findings to {out}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="pt")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -156,6 +257,18 @@ def main():
     r.add_argument("--parquet", default="data/exports/tuples.parquet")
     r.add_argument("--min-support", type=int, default=10)
     r.set_defaults(func=cmd_report)
+
+    fa = sub.add_parser("finding-add", help="Ingest pr-review-panel findings (JSONL via stdin, --json, or --from-file).")
+    fa.add_argument("--db", default="data/events.db")
+    fa.add_argument("--json", help="Single finding as a JSON string.")
+    fa.add_argument("--from-file", help="Path to a JSONL file of findings.")
+    fa.set_defaults(func=cmd_finding_add)
+
+    fe = sub.add_parser("findings-export", help="Dump findings table to JSONL.")
+    fe.add_argument("--db", default="data/events.db")
+    fe.add_argument("--out", default="data/exports/findings.jsonl")
+    fe.set_defaults(func=cmd_findings_export)
+
     args = p.parse_args()
     args.func(args)
 
