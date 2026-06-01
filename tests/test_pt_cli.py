@@ -83,6 +83,23 @@ def test_finding_add_rejects_missing_required(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
 
 
+def test_finding_add_warns_when_session_id_unset(tmp_path, monkeypatch):
+    """When neither the row nor $CLAUDE_SESSION_ID provides a session_id,
+    surface a stderr warning and tally — silent NULL session_id breaks the
+    cost-by-failure fusion view because the join key is missing."""
+    db = tmp_path / "events.db"
+    finding = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "no session"}
+    env = {k: v for k, v in __import__("os").environ.items() if k != "CLAUDE_SESSION_ID"}
+    out = subprocess.run(
+        ["python", "-m", "lib.pt_cli", "finding-add", "--db", str(db)],
+        cwd=REPO, capture_output=True, text=True,
+        input=json.dumps(finding) + "\n", env=env, check=True,
+    )
+    assert "inserted=1" in out.stdout
+    assert "no_session_id=1" in out.stdout
+    assert "session_id" in out.stderr.lower()
+
+
 def test_finding_add_updates_severity_on_revision(tmp_path):
     """Re-running a panel with a revised severity must update the stored row,
     not silently no-op via INSERT OR IGNORE."""

@@ -177,7 +177,7 @@ def cmd_finding_add(args):
         raw_lines = [l for l in sys.stdin if l.strip()]
 
     session_id_default = os.environ.get("CLAUDE_SESSION_ID")
-    inserted = skipped = updated = invalid = 0
+    inserted = skipped = updated = invalid = no_session_id = 0
     rows = []
     for raw in raw_lines:
         try:
@@ -192,6 +192,15 @@ def cmd_finding_add(args):
             invalid += 1
             continue
         fid = _finding_id(row)
+        sid = row.get("session_id") or session_id_default
+        if not sid:
+            no_session_id += 1
+            print(
+                f"  warn: session_id missing for {row.get('pr_url')} — "
+                "$CLAUDE_SESSION_ID is unset and row carries no session_id. "
+                "Row will be unattributable in cost-by-failure fusion.",
+                file=sys.stderr,
+            )
         existing = db.execute(
             "SELECT severity FROM findings WHERE finding_id = ?", (fid,)
         ).fetchone()
@@ -204,7 +213,7 @@ def cmd_finding_add(args):
                 (
                     fid,
                     row["pr_url"],
-                    row.get("session_id") or session_id_default,
+                    sid,
                     int(row.get("ts") or time.time()),
                     row["severity"],
                     row.get("category"),
@@ -226,7 +235,10 @@ def cmd_finding_add(args):
         else:
             skipped += 1
     db.commit()
-    print(f"inserted={inserted} skipped_dup={skipped} updated={updated} invalid={invalid}")
+    print(
+        f"inserted={inserted} skipped_dup={skipped} updated={updated} "
+        f"invalid={invalid} no_session_id={no_session_id}"
+    )
 
 
 def cmd_findings_export(args):
