@@ -83,6 +83,24 @@ def test_finding_add_rejects_missing_required(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
 
 
+def test_finding_add_updates_severity_on_revision(tmp_path):
+    """Re-running a panel with a revised severity must update the stored row,
+    not silently no-op via INSERT OR IGNORE."""
+    db = tmp_path / "events.db"
+    finding = {
+        "pr_url": "https://github.com/org/repo/pull/9",
+        "severity": "MEDIUM",
+        "summary": "promotion candidate",
+        "file_path": "src/x.py", "line_no": 1,
+    }
+    _run("finding-add", "--db", str(db), stdin=json.dumps(finding) + "\n")
+    finding["severity"] = "HIGH"
+    out = _run("finding-add", "--db", str(db), stdin=json.dumps(finding) + "\n")
+    assert "updated=1" in out.stdout, f"expected updated=1, got: {out.stdout}"
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT severity FROM findings").fetchone()[0] == "HIGH"
+
+
 def test_finding_add_malformed_row_does_not_abort_batch(tmp_path):
     """A single JSONDecodeError on one line must not lose the other rows."""
     db = tmp_path / "events.db"

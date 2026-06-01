@@ -177,7 +177,7 @@ def cmd_finding_add(args):
         raw_lines = [l for l in sys.stdin if l.strip()]
 
     session_id_default = os.environ.get("CLAUDE_SESSION_ID")
-    inserted = skipped = invalid = 0
+    inserted = skipped = updated = invalid = 0
     rows = []
     for raw in raw_lines:
         try:
@@ -191,32 +191,42 @@ def cmd_finding_add(args):
             print(f"  skip (invalid): {err}", file=sys.stderr)
             invalid += 1
             continue
-        cur = db.execute(
-            "INSERT OR IGNORE INTO findings "
-            "(finding_id, pr_url, session_id, ts, severity, category, "
-            " file_path, line_no, summary, evidence, panel_variant, source) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                _finding_id(row),
-                row["pr_url"],
-                row.get("session_id") or session_id_default,
-                int(row.get("ts") or time.time()),
-                row["severity"],
-                row.get("category"),
-                row.get("file_path"),
-                row.get("line_no"),
-                row["summary"],
-                row.get("evidence"),
-                row.get("panel_variant"),
-                row.get("source", "pr-review-panel"),
-            ),
-        )
-        if cur.rowcount:
+        fid = _finding_id(row)
+        existing = db.execute(
+            "SELECT severity FROM findings WHERE finding_id = ?", (fid,)
+        ).fetchone()
+        if existing is None:
+            db.execute(
+                "INSERT INTO findings "
+                "(finding_id, pr_url, session_id, ts, severity, category, "
+                " file_path, line_no, summary, evidence, panel_variant, source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    fid,
+                    row["pr_url"],
+                    row.get("session_id") or session_id_default,
+                    int(row.get("ts") or time.time()),
+                    row["severity"],
+                    row.get("category"),
+                    row.get("file_path"),
+                    row.get("line_no"),
+                    row["summary"],
+                    row.get("evidence"),
+                    row.get("panel_variant"),
+                    row.get("source", "pr-review-panel"),
+                ),
+            )
             inserted += 1
+        elif existing[0] != row["severity"]:
+            db.execute(
+                "UPDATE findings SET severity = ?, ts = ? WHERE finding_id = ?",
+                (row["severity"], int(row.get("ts") or time.time()), fid),
+            )
+            updated += 1
         else:
             skipped += 1
     db.commit()
-    print(f"inserted={inserted} skipped_dup={skipped} invalid={invalid}")
+    print(f"inserted={inserted} skipped_dup={skipped} updated={updated} invalid={invalid}")
 
 
 def cmd_findings_export(args):
