@@ -119,7 +119,7 @@ def test_cost_by_failure_top_sessions(tmp_path):
     _seed_store(store, {"big": [(2.50, 5000, 1000)], "small": [(0.10, 100, 50)]})
     _seed_findings(events, [
         {"pr_url": "x/1", "severity": "HIGH", "category": "c1", "summary": "first", "session_id": "big"},
-        {"pr_url": "x/2", "severity": "MED",  "category": "c2", "summary": "second", "session_id": "small"},
+        {"pr_url": "x/2", "severity": "MEDIUM", "category": "c2", "summary": "second", "session_id": "small"},
     ])
     out = _run("cost-by-failure", "--db", str(events), "--store", str(store), "--top-sessions", "2")
     assert "big" in out.stdout and "small" in out.stdout
