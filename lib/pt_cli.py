@@ -170,14 +170,21 @@ def cmd_finding_add(args):
     _ensure_schema(db)
 
     if args.json:
-        rows = [json.loads(args.json)]
+        raw_lines = [args.json]
     elif args.from_file:
-        rows = [json.loads(line) for line in Path(args.from_file).read_text().splitlines() if line.strip()]
+        raw_lines = [l for l in Path(args.from_file).read_text().splitlines() if l.strip()]
     else:
-        rows = [json.loads(line) for line in sys.stdin if line.strip()]
+        raw_lines = [l for l in sys.stdin if l.strip()]
 
     session_id_default = os.environ.get("CLAUDE_SESSION_ID")
     inserted = skipped = invalid = 0
+    rows = []
+    for raw in raw_lines:
+        try:
+            rows.append(json.loads(raw))
+        except json.JSONDecodeError as exc:
+            print(f"  skip (malformed JSON): {exc}", file=sys.stderr)
+            invalid += 1
     for row in rows:
         err = _validate_finding(row)
         if err:

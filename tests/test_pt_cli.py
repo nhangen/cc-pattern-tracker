@@ -83,6 +83,19 @@ def test_finding_add_rejects_missing_required(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
 
 
+def test_finding_add_malformed_row_does_not_abort_batch(tmp_path):
+    """A single JSONDecodeError on one line must not lose the other rows."""
+    db = tmp_path / "events.db"
+    good_a = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "first ok"}
+    good_b = {"pr_url": "https://x/2", "severity": "LOW",  "summary": "second ok"}
+    payload = json.dumps(good_a) + "\n{ this is not json }\n" + json.dumps(good_b) + "\n"
+    out = _run("finding-add", "--db", str(db), stdin=payload)
+    assert "inserted=2" in out.stdout
+    assert "invalid=1" in out.stdout
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 2
+
+
 def test_findings_export_dumps_jsonl(tmp_path):
     db = tmp_path / "events.db"
     findings = [
