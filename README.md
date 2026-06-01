@@ -91,8 +91,9 @@ pt findings-export [--out F]   # Dump findings table to JSONL
 pt cost-by-failure             # Join findings to token-scope per-session cost
    [--by category|severity]    #   group by findings.category (default) or severity
    [--top-sessions N]          #   alternate: list top N sessions by attributed cost
-   [--since Nh|Nd|Nw]          #   limit to recent findings
-   [--store PATH]              #   override ~/.claude/__store.db
+   [--since Nh|Nd|Nw]          #   limit findings; also passed to token-scope
+   [--token-scope-cli PATH]    #   override token-scope CLI lookup
+   [--fetch-limit N]           #   max sessions fetched from token-scope (default 1000)
 ```
 
 All commands default to project-relative `data/` paths.
@@ -107,26 +108,33 @@ All commands default to project-relative `data/` paths.
 
 It joins the `findings` table (from `pt finding-add`, populated by the
 `pr-review-panel` skill at runtime via `$CLAUDE_SESSION_ID`) to token-scope's
-per-session token + cost data in `~/.claude/__store.db`, on `session_id`.
+per-session cost data on `session_id`. token-scope is invoked as a
+subprocess (`token-scope --sessions --json --since N --limit M`) and reads
+Claude Code's JSONL session logs directly — no dependency on the deprecated
+`~/.claude/__store.db` snapshot.
 
-The token-scope store is ATTACHed read-only. Set `TOKEN_SCOPE_DB` or pass
-`--store` to point at a different `__store.db`.
+CLI resolution order: `--token-scope-cli`, then `$TOKEN_SCOPE_CLI`, then
+the latest version under `~/.claude/plugins/cache/nhangen-tools/token-scope/`,
+then `token-scope` on `$PATH`. `.ts` paths are invoked via `bun`.
+
+The `out_tok` column is token-scope's per-session **output_tokens** total
+(not input + cache). Use `total_cost_usd` for budget questions.
 
 ```text
 $ pt cost-by-failure
-category                      findings  sessions      tokens    cost_usd
+category                      findings  sessions     out_tok    cost_usd
 ------------------------------------------------------------------------------
-concurrency                          2         1      42.34M  $  21.1379
+concurrency                          2         1     312.4k   $  21.1379
     ↳ 8-parallel test passes on broken sync
-test-quality                         1         1      42.34M  $  21.1379
+test-quality                         1         1     312.4k   $  21.1379
     ↳ expected built from same primitive
-style                                2         2       1.92M  $   1.1041
+style                                2         2      18.2k   $   1.1041
     ↳ trailing whitespace
-safety-invariant                     2         2       1.38M  $   0.8472
+safety-invariant                     2         2      14.0k   $   0.8472
     ↳ auditor framed as verifier not discoverer
 
 unattributable: 1 finding(s) with NULL session_id, 1 finding(s) with session
-not present in store (__store.db)
+not present in token-scope window
 ```
 
 ### Cost dedup semantics
@@ -144,8 +152,9 @@ Two classes of findings can't be joined and are surfaced in a footer rather
 than silently dropped:
 
 - **NULL session_id** — finding ingested without `$CLAUDE_SESSION_ID` set.
-- **Orphan session_id** — finding's session isn't present in the store
-  (e.g. the store was cleaned, or the session was from a different machine).
+- **Orphan session_id** — finding's session isn't in token-scope's window
+  (e.g. older than `--since`, beyond `--fetch-limit`, or from a machine whose
+  JSONL logs token-scope doesn't see). Widen `--since`/`--fetch-limit` to recover.
 
 If you see these, decide whether to backfill or accept the gap; the
 fusion view will not lie about coverage.
