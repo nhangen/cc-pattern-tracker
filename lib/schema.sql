@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS findings (
   pr_url         TEXT NOT NULL,
   session_id     TEXT,
   ts             INTEGER NOT NULL,
-  severity       TEXT NOT NULL,
+  severity       TEXT NOT NULL CHECK(severity IN ('BLOCKER','HIGH','MEDIUM','LOW')),
   category       TEXT,
   file_path      TEXT,
   line_no        INTEGER,

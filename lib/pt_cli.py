@@ -147,13 +147,25 @@ def cmd_report(args):
 
 
 REQUIRED_FINDING_FIELDS = ("pr_url", "severity", "summary")
+ALLOWED_SEVERITY = ("BLOCKER", "HIGH", "MEDIUM", "LOW")
 
 
 def _validate_finding(row: dict) -> str | None:
     for f in REQUIRED_FINDING_FIELDS:
         if not row.get(f):
             return f"missing required field: {f}"
+    if row["severity"] not in ALLOWED_SEVERITY:
+        return (
+            f"unknown severity {row['severity']!r}; "
+            f"expected one of {ALLOWED_SEVERITY}"
+        )
     return None
+
+
+def _normalize_category(raw):
+    if raw is None:
+        return None
+    return raw.strip().lower().replace("_", "-")
 
 
 def cmd_finding_add(args):
@@ -170,46 +182,75 @@ def cmd_finding_add(args):
     _ensure_schema(db)
 
     if args.json:
-        rows = [json.loads(args.json)]
+        raw_lines = [args.json]
     elif args.from_file:
-        rows = [json.loads(line) for line in Path(args.from_file).read_text().splitlines() if line.strip()]
+        raw_lines = [l for l in Path(args.from_file).read_text().splitlines() if l.strip()]
     else:
-        rows = [json.loads(line) for line in sys.stdin if line.strip()]
+        raw_lines = [l for l in sys.stdin if l.strip()]
 
     session_id_default = os.environ.get("CLAUDE_SESSION_ID")
-    inserted = skipped = invalid = 0
+    inserted = skipped = updated = invalid = no_session_id = 0
+    rows = []
+    for raw in raw_lines:
+        try:
+            rows.append(json.loads(raw))
+        except json.JSONDecodeError as exc:
+            print(f"  skip (malformed JSON): {exc}", file=sys.stderr)
+            invalid += 1
     for row in rows:
         err = _validate_finding(row)
         if err:
             print(f"  skip (invalid): {err}", file=sys.stderr)
             invalid += 1
             continue
-        cur = db.execute(
-            "INSERT OR IGNORE INTO findings "
-            "(finding_id, pr_url, session_id, ts, severity, category, "
-            " file_path, line_no, summary, evidence, panel_variant, source) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                _finding_id(row),
-                row["pr_url"],
-                row.get("session_id") or session_id_default,
-                int(row.get("ts") or time.time()),
-                row["severity"],
-                row.get("category"),
-                row.get("file_path"),
-                row.get("line_no"),
-                row["summary"],
-                row.get("evidence"),
-                row.get("panel_variant"),
-                row.get("source", "pr-review-panel"),
-            ),
-        )
-        if cur.rowcount:
+        fid = _finding_id(row)
+        sid = row.get("session_id") or session_id_default
+        if not sid:
+            no_session_id += 1
+            print(
+                f"  warn: session_id missing for {row.get('pr_url')} — "
+                "$CLAUDE_SESSION_ID is unset and row carries no session_id. "
+                "Row will be unattributable in cost-by-failure fusion.",
+                file=sys.stderr,
+            )
+        existing = db.execute(
+            "SELECT severity FROM findings WHERE finding_id = ?", (fid,)
+        ).fetchone()
+        if existing is None:
+            db.execute(
+                "INSERT INTO findings "
+                "(finding_id, pr_url, session_id, ts, severity, category, "
+                " file_path, line_no, summary, evidence, panel_variant, source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    fid,
+                    row["pr_url"],
+                    sid,
+                    int(row.get("ts") or time.time()),
+                    row["severity"],
+                    _normalize_category(row.get("category")),
+                    row.get("file_path"),
+                    row.get("line_no"),
+                    row["summary"],
+                    row.get("evidence"),
+                    row.get("panel_variant"),
+                    row.get("source", "pr-review-panel"),
+                ),
+            )
             inserted += 1
+        elif existing[0] != row["severity"]:
+            db.execute(
+                "UPDATE findings SET severity = ?, ts = ? WHERE finding_id = ?",
+                (row["severity"], int(row.get("ts") or time.time()), fid),
+            )
+            updated += 1
         else:
             skipped += 1
     db.commit()
-    print(f"inserted={inserted} skipped_dup={skipped} invalid={invalid}")
+    print(
+        f"inserted={inserted} skipped_dup={skipped} updated={updated} "
+        f"invalid={invalid} no_session_id={no_session_id}"
+    )
 
 
 def cmd_findings_export(args):

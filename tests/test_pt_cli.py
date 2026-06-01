@@ -83,6 +83,99 @@ def test_finding_add_rejects_missing_required(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
 
 
+def test_pr_review_panel_emit_contract(tmp_path):
+    """Contract fixture pinning the exact field set pr-review-panel emits.
+
+    A schema rename or required-field addition here MUST fail this test and
+    force a coordinated edit to home/.claude/skills/pr-review-panel/SKILL.md
+    in the llm-tools repo. Without this fixture, pattern-tracker can drift
+    away from the producer SKILL silently."""
+    db = tmp_path / "events.db"
+    fixture = Path(__file__).parent / "fixtures" / "pr-review-panel-emit.jsonl"
+    out = _run("finding-add", "--db", str(db), "--from-file", str(fixture))
+    n_lines = sum(1 for line in fixture.read_text().splitlines() if line.strip())
+    assert f"inserted={n_lines}" in out.stdout, f"fixture rejected: {out.stdout} {out.stderr}"
+    assert "invalid=0" in out.stdout
+    conn = sqlite3.connect(db)
+    severities = {row[0] for row in conn.execute("SELECT severity FROM findings")}
+    assert severities == {"BLOCKER", "HIGH", "MEDIUM", "LOW"}
+    categories = {row[0] for row in conn.execute("SELECT category FROM findings")}
+    assert categories == {"silent-failure", "convention", "design"}
+
+
+def test_finding_add_rejects_unknown_severity(tmp_path):
+    """Producer-side typo on severity must be rejected at CLI, not stored as
+    a polluting free-text value that breaks WHERE severity = 'HIGH' reports."""
+    db = tmp_path / "events.db"
+    bad = json.dumps({"pr_url": "https://x", "severity": "Strong", "summary": "typo"}) + "\n"
+    out = _run("finding-add", "--db", str(db), stdin=bad)
+    assert "invalid=1" in out.stdout
+    assert "severity" in out.stderr.lower()
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
+
+
+def test_finding_add_normalizes_category(tmp_path):
+    """category drift (silent-failure vs silent_failure) is silent in free-text
+    columns. Normalize underscores->hyphens and lowercase at ingest."""
+    db = tmp_path / "events.db"
+    finding = json.dumps({
+        "pr_url": "https://x/1", "severity": "HIGH", "summary": "norm",
+        "category": "Silent_Failure",
+    }) + "\n"
+    _run("finding-add", "--db", str(db), stdin=finding)
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT category FROM findings").fetchone()[0] == "silent-failure"
+
+
+def test_finding_add_warns_when_session_id_unset(tmp_path, monkeypatch):
+    """When neither the row nor $CLAUDE_SESSION_ID provides a session_id,
+    surface a stderr warning and tally — silent NULL session_id breaks the
+    cost-by-failure fusion view because the join key is missing."""
+    db = tmp_path / "events.db"
+    finding = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "no session"}
+    env = {k: v for k, v in __import__("os").environ.items() if k != "CLAUDE_SESSION_ID"}
+    out = subprocess.run(
+        ["python", "-m", "lib.pt_cli", "finding-add", "--db", str(db)],
+        cwd=REPO, capture_output=True, text=True,
+        input=json.dumps(finding) + "\n", env=env, check=True,
+    )
+    assert "inserted=1" in out.stdout
+    assert "no_session_id=1" in out.stdout
+    assert "session_id" in out.stderr.lower()
+
+
+def test_finding_add_updates_severity_on_revision(tmp_path):
+    """Re-running a panel with a revised severity must update the stored row,
+    not silently no-op via INSERT OR IGNORE."""
+    db = tmp_path / "events.db"
+    finding = {
+        "pr_url": "https://github.com/org/repo/pull/9",
+        "severity": "MEDIUM",
+        "summary": "promotion candidate",
+        "file_path": "src/x.py", "line_no": 1,
+    }
+    _run("finding-add", "--db", str(db), stdin=json.dumps(finding) + "\n")
+    finding["severity"] = "HIGH"
+    out = _run("finding-add", "--db", str(db), stdin=json.dumps(finding) + "\n")
+    assert "updated=1" in out.stdout, f"expected updated=1, got: {out.stdout}"
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT severity FROM findings").fetchone()[0] == "HIGH"
+
+
+def test_finding_add_malformed_row_does_not_abort_batch(tmp_path):
+    """A single JSONDecodeError on one line must not lose the other rows."""
+    db = tmp_path / "events.db"
+    good_a = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "first ok"}
+    good_b = {"pr_url": "https://x/2", "severity": "LOW",  "summary": "second ok"}
+    payload = json.dumps(good_a) + "\n{ this is not json }\n" + json.dumps(good_b) + "\n"
+    out = _run("finding-add", "--db", str(db), stdin=payload)
+    assert "inserted=2" in out.stdout
+    assert "invalid=1" in out.stdout
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 2
+
+
 def test_findings_export_dumps_jsonl(tmp_path):
     db = tmp_path / "events.db"
     findings = [
