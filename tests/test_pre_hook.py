@@ -143,3 +143,30 @@ def test_pre_hook_migration_is_idempotent(tmp_path):
     assert r2.returncode == 0, r2.stderr
     n = sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0]
     assert n == 2
+
+
+def test_migrate_events_tolerates_concurrent_duplicate_alter(tmp_path):
+    """If two hook processes race the ALTER, the loser sees `duplicate column
+    name`; that's benign for additive-only migrations and must not crash."""
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from lib.hook_writer import _migrate_events
+    db = tmp_path / "events.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE events (
+          event_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, timestamp INTEGER NOT NULL,
+          tool_name TEXT NOT NULL, cwd TEXT, branch TEXT,
+          prior_tools_5min TEXT, prior_errors_count INTEGER DEFAULT 0,
+          prompt_hash TEXT, rules_loaded_hash TEXT,
+          exit_code INTEGER, error_tail TEXT,
+          pre_complete INTEGER DEFAULT 0, post_complete INTEGER DEFAULT 0,
+          turn_id TEXT
+        );
+        """
+    )
+    _migrate_events(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+    assert {"turn_id", "plugin_or_skill"}.issubset(cols)
+    conn.close()

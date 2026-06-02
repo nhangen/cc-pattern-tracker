@@ -35,11 +35,19 @@ def _migrate_events(conn: sqlite3.Connection) -> None:
 
     Idempotent: skips columns that already exist. Safe to call on every open
     because the cost is a single PRAGMA read when nothing needs to change.
+    The PRAGMA-then-ALTER pair is not transactional, so two concurrent hook
+    processes can both observe "missing" and race the ALTER; the loser hits
+    `duplicate column name`, which is benign for an additive migration.
     """
     existing = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
     for name, type_ in _EVENTS_ADDITIVE_COLUMNS:
-        if name not in existing:
+        if name in existing:
+            continue
+        try:
             conn.execute(f"ALTER TABLE events ADD COLUMN {name} {type_}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
 
 
 def _ensure_db(db_path: Path, schema_path: Path) -> None:
