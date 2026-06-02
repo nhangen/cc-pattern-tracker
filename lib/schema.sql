@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS events (
   exit_code          INTEGER,
   error_tail         TEXT,
   pre_complete       INTEGER DEFAULT 0,
-  post_complete      INTEGER DEFAULT 0
+  post_complete      INTEGER DEFAULT 0,
+  turn_id            TEXT,
+  plugin_or_skill    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
