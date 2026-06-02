@@ -24,12 +24,52 @@ def _branch(cwd: str) -> str:
         return ""
 
 
+_EVENTS_ADDITIVE_COLUMNS = (
+    ("turn_id", "TEXT"),
+    ("plugin_or_skill", "TEXT"),
+)
+
+
+def _migrate_events(conn: sqlite3.Connection) -> None:
+    """Additive-only migrations for the events table.
+
+    Idempotent: skips columns that already exist. Safe to call on every open
+    because the cost is a single PRAGMA read when nothing needs to change.
+    The PRAGMA-then-ALTER pair is not transactional, so two concurrent hook
+    processes can both observe "missing" and race the ALTER; the loser hits
+    `duplicate column name`, which is benign for an additive migration.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+    for name, type_ in _EVENTS_ADDITIVE_COLUMNS:
+        if name in existing:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {name} {type_}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+
+
 def _ensure_db(db_path: Path, schema_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     if not db_path.exists():
         conn = sqlite3.connect(db_path)
         conn.executescript(schema_path.read_text())
         conn.close()
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        _migrate_events(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _coerce_optional_text(value) -> str | None:
+    if value is None:
+        return None
+    s = str(value)
+    return s if s else None
 
 
 def cmd_pre(args) -> None:
@@ -38,6 +78,8 @@ def cmd_pre(args) -> None:
     tool_name = str(payload.get("tool_name") or "unknown")
     prompt_hash = payload.get("prompt_hash")
     rules_loaded_hash = payload.get("rules_loaded_hash")
+    turn_id = _coerce_optional_text(payload.get("turn_id"))
+    plugin_or_skill = _coerce_optional_text(payload.get("plugin_or_skill"))
 
     cwd = os.getcwd()
     ts = int(time.time())
@@ -62,10 +104,12 @@ def cmd_pre(args) -> None:
 
     cur.execute(
         "INSERT INTO events (event_id, session_id, timestamp, tool_name, cwd, branch, "
-        "prior_tools_5min, prior_errors_count, prompt_hash, rules_loaded_hash, pre_complete) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        "prior_tools_5min, prior_errors_count, prompt_hash, rules_loaded_hash, "
+        "turn_id, plugin_or_skill, pre_complete) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
         (event_id, session_id, ts, tool_name, cwd, branch,
-         prior_tools_str, prior_errors, prompt_hash, rules_loaded_hash),
+         prior_tools_str, prior_errors, prompt_hash, rules_loaded_hash,
+         turn_id, plugin_or_skill),
     )
     conn.commit()
     conn.close()
