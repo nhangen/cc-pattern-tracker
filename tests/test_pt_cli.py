@@ -57,6 +57,90 @@ def test_finding_add_inserts_from_stdin(tmp_path):
     assert row == (finding["pr_url"], "HIGH", finding["summary"], "src/foo.ts", 91, "sess-x")
 
 
+def test_event_add_inserts_minimal(tmp_path):
+    db = tmp_path / "events.db"
+    ev = {"session_id": "sess-x", "tool_name": "ollama-agent"}
+    out = _run("event-add", "--db", str(db), stdin=json.dumps(ev) + "\n")
+    assert "inserted=1" in out.stdout
+    row = sqlite3.connect(db).execute("SELECT session_id, tool_name FROM events").fetchone()
+    assert row == ("sess-x", "ollama-agent")
+
+
+def test_event_add_carries_rules_loaded_hash(tmp_path):
+    # The whole point of slice D: a local run's rules_loaded_hash lands in events.
+    db = tmp_path / "events.db"
+    ev = {"session_id": "s", "tool_name": "ollama-agent", "rules_loaded_hash": "abc123",
+          "plugin_or_skill": "triage", "event_id": "run-1"}
+    _run("event-add", "--db", str(db), stdin=json.dumps(ev) + "\n")
+    row = sqlite3.connect(db).execute(
+        "SELECT rules_loaded_hash, plugin_or_skill FROM events WHERE event_id='run-1'").fetchone()
+    assert row == ("abc123", "triage")
+
+
+def test_event_add_idempotent_on_event_id(tmp_path):
+    # Re-emitting the same run (same event_id) must not double-insert. Revert the
+    # INSERT OR IGNORE to a plain INSERT and the second call errors / count != 1.
+    db = tmp_path / "events.db"
+    ev = json.dumps({"session_id": "s", "tool_name": "t", "event_id": "fixed-1"}) + "\n"
+    _run("event-add", "--db", str(db), stdin=ev)
+    out = _run("event-add", "--db", str(db), stdin=ev)
+    assert "skipped_dup=1" in out.stdout
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+
+def test_event_add_rejects_missing_required(tmp_path):
+    db = tmp_path / "events.db"
+    out = _run("event-add", "--db", str(db),
+               stdin=json.dumps({"session_id": "s"}) + "\n")  # no tool_name
+    assert "invalid" in (out.stdout + out.stderr).lower()
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def test_event_add_from_file_jsonl(tmp_path):
+    db = tmp_path / "events.db"
+    f = tmp_path / "ev.jsonl"
+    f.write_text(
+        json.dumps({"session_id": "s", "tool_name": "ollama-agent", "event_id": "a"}) + "\n"
+        + json.dumps({"session_id": "s", "tool_name": "ollama-agent", "event_id": "b"}) + "\n")
+    out = _run("event-add", "--db", str(db), "--from-file", str(f))
+    assert "inserted=2" in out.stdout
+
+
+def test_event_add_from_json_flag(tmp_path):
+    # The --json input branch has its own argv path; without this it is dead
+    # coverage (delete the branch and every other test still passes).
+    db = tmp_path / "events.db"
+    row = json.dumps({"session_id": "s1", "tool_name": "Bash", "event_id": "j1"})
+    out = _run("event-add", "--db", str(db), "--json", row)
+    assert "inserted=1" in out.stdout
+    got = sqlite3.connect(db).execute(
+        "SELECT tool_name FROM events WHERE event_id='j1'").fetchone()
+    assert got == ("Bash",)
+
+
+def test_event_add_malformed_row_does_not_abort_batch(tmp_path):
+    # A bad JSONL line is skipped (counted invalid), not fatal to the batch.
+    # Remove the JSONDecodeError except in cmd_event_add and this fails.
+    db = tmp_path / "events.db"
+    good = json.dumps({"session_id": "s1", "tool_name": "Bash", "event_id": "g1"})
+    good2 = json.dumps({"session_id": "s1", "tool_name": "Bash", "event_id": "g2"})
+    out = _run("event-add", "--db", str(db), stdin="\n".join([good, "not-json{{{", good2]) + "\n")
+    assert "inserted=2" in out.stdout
+    assert "invalid=1" in out.stdout
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
+
+
+def test_event_add_non_integer_flag_is_invalid_not_fatal(tmp_path):
+    # A non-numeric pre_complete/post_complete must be counted invalid, not
+    # crash the row with an uncaught ValueError. Revert the _validate_event
+    # flag check and this raises CalledProcessError instead.
+    db = tmp_path / "events.db"
+    bad = json.dumps({"session_id": "s", "tool_name": "t", "pre_complete": "yes"})
+    out = _run("event-add", "--db", str(db), stdin=bad + "\n")
+    assert "invalid=1" in out.stdout
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
 def test_finding_add_is_idempotent(tmp_path):
     db = tmp_path / "events.db"
     finding = {
