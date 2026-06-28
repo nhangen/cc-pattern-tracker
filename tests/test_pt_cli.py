@@ -57,6 +57,55 @@ def test_finding_add_inserts_from_stdin(tmp_path):
     assert row == (finding["pr_url"], "HIGH", finding["summary"], "src/foo.ts", 91, "sess-x")
 
 
+def test_event_add_inserts_minimal(tmp_path):
+    db = tmp_path / "events.db"
+    ev = {"session_id": "sess-x", "tool_name": "ollama-agent"}
+    out = _run("event-add", "--db", str(db), stdin=json.dumps(ev) + "\n")
+    assert "inserted=1" in out.stdout
+    row = sqlite3.connect(db).execute("SELECT session_id, tool_name FROM events").fetchone()
+    assert row == ("sess-x", "ollama-agent")
+
+
+def test_event_add_carries_rules_loaded_hash(tmp_path):
+    # The whole point of slice D: a local run's rules_loaded_hash lands in events.
+    db = tmp_path / "events.db"
+    ev = {"session_id": "s", "tool_name": "ollama-agent", "rules_loaded_hash": "abc123",
+          "plugin_or_skill": "triage", "event_id": "run-1"}
+    _run("event-add", "--db", str(db), stdin=json.dumps(ev) + "\n")
+    row = sqlite3.connect(db).execute(
+        "SELECT rules_loaded_hash, plugin_or_skill FROM events WHERE event_id='run-1'").fetchone()
+    assert row == ("abc123", "triage")
+
+
+def test_event_add_idempotent_on_event_id(tmp_path):
+    # Re-emitting the same run (same event_id) must not double-insert. Revert the
+    # INSERT OR IGNORE to a plain INSERT and the second call errors / count != 1.
+    db = tmp_path / "events.db"
+    ev = json.dumps({"session_id": "s", "tool_name": "t", "event_id": "fixed-1"}) + "\n"
+    _run("event-add", "--db", str(db), stdin=ev)
+    out = _run("event-add", "--db", str(db), stdin=ev)
+    assert "skipped_dup=1" in out.stdout
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+
+def test_event_add_rejects_missing_required(tmp_path):
+    db = tmp_path / "events.db"
+    out = _run("event-add", "--db", str(db),
+               stdin=json.dumps({"session_id": "s"}) + "\n")  # no tool_name
+    assert "invalid" in (out.stdout + out.stderr).lower()
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def test_event_add_from_file_jsonl(tmp_path):
+    db = tmp_path / "events.db"
+    f = tmp_path / "ev.jsonl"
+    f.write_text(
+        json.dumps({"session_id": "s", "tool_name": "ollama-agent", "event_id": "a"}) + "\n"
+        + json.dumps({"session_id": "s", "tool_name": "ollama-agent", "event_id": "b"}) + "\n")
+    out = _run("event-add", "--db", str(db), "--from-file", str(f))
+    assert "inserted=2" in out.stdout
+
+
 def test_finding_add_is_idempotent(tmp_path):
     db = tmp_path / "events.db"
     finding = {

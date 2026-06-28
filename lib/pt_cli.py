@@ -6,6 +6,7 @@ import os
 import sqlite3
 import sys
 import time
+import uuid
 from pathlib import Path
 from lib.label_miner import mine_dir
 
@@ -253,6 +254,75 @@ def cmd_finding_add(args):
     )
 
 
+REQUIRED_EVENT_FIELDS = ("session_id", "tool_name")
+
+
+def _validate_event(row: dict) -> str | None:
+    for f in REQUIRED_EVENT_FIELDS:
+        if not row.get(f):
+            return f"missing required field: {f}"
+    return None
+
+
+def cmd_event_add(args):
+    """Add events rows from outside the Claude Code hook path.
+
+    The PreToolUse hook (lib/hook_writer.py) is the usual writer; this verb lets
+    a non-hook caller — e.g. a local ollama-agent cron run recording its
+    rules_loaded_hash — append the same kind of event. JSONL on stdin OR a single
+    --json string OR --from-file. Each row needs session_id + tool_name; the
+    hook-derived columns (prior_tools_5min, prior_errors_count) are left to the
+    hook path. event_id is minted when absent; supply a deterministic event_id to
+    make re-emission idempotent (INSERT OR IGNORE on the primary key).
+    """
+    db = sqlite3.connect(args.db)
+    _ensure_schema(db)
+
+    if args.json:
+        raw_lines = [args.json]
+    elif args.from_file:
+        raw_lines = [l for l in Path(args.from_file).read_text().splitlines() if l.strip()]
+    else:
+        raw_lines = [l for l in sys.stdin if l.strip()]
+
+    inserted = skipped = invalid = 0
+    for raw in raw_lines:
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(f"  skip (malformed JSON): {exc}", file=sys.stderr)
+            invalid += 1
+            continue
+        err = _validate_event(row)
+        if err:
+            print(f"  skip (invalid): {err}", file=sys.stderr)
+            invalid += 1
+            continue
+        eid = row.get("event_id") or str(uuid.uuid4())
+        ts = int(row.get("timestamp") or time.time())
+        cur = db.execute(
+            "INSERT OR IGNORE INTO events "
+            "(event_id, session_id, timestamp, tool_name, cwd, branch, "
+            " prompt_hash, rules_loaded_hash, error_tail, turn_id, plugin_or_skill, "
+            " exit_code, pre_complete, post_complete) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                eid, row["session_id"], ts, row["tool_name"],
+                row.get("cwd"), row.get("branch"), row.get("prompt_hash"),
+                row.get("rules_loaded_hash"), row.get("error_tail"),
+                row.get("turn_id"), row.get("plugin_or_skill"),
+                row.get("exit_code"),
+                int(row.get("pre_complete") or 0), int(row.get("post_complete") or 0),
+            ),
+        )
+        if cur.rowcount:
+            inserted += 1
+        else:
+            skipped += 1
+    db.commit()
+    print(f"inserted={inserted} skipped_dup={skipped} invalid={invalid}")
+
+
 def cmd_findings_export(args):
     """Dump findings as JSONL for downstream cost-failure fusion."""
     db = sqlite3.connect(args.db)
@@ -304,6 +374,12 @@ def main():
     fa.add_argument("--json", help="Single finding as a JSON string.")
     fa.add_argument("--from-file", help="Path to a JSONL file of findings.")
     fa.set_defaults(func=cmd_finding_add)
+
+    ea = sub.add_parser("event-add", help="Add events rows from outside the hook path (JSONL via stdin, --json, or --from-file).")
+    ea.add_argument("--db", default="data/events.db")
+    ea.add_argument("--json", help="Single event as a JSON string.")
+    ea.add_argument("--from-file", help="Path to a JSONL file of events.")
+    ea.set_defaults(func=cmd_event_add)
 
     fe = sub.add_parser("findings-export", help="Dump findings table to JSONL.")
     fe.add_argument("--db", default="data/events.db")
