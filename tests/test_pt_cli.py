@@ -106,6 +106,41 @@ def test_event_add_from_file_jsonl(tmp_path):
     assert "inserted=2" in out.stdout
 
 
+def test_event_add_from_json_flag(tmp_path):
+    # The --json input branch has its own argv path; without this it is dead
+    # coverage (delete the branch and every other test still passes).
+    db = tmp_path / "events.db"
+    row = json.dumps({"session_id": "s1", "tool_name": "Bash", "event_id": "j1"})
+    out = _run("event-add", "--db", str(db), "--json", row)
+    assert "inserted=1" in out.stdout
+    got = sqlite3.connect(db).execute(
+        "SELECT tool_name FROM events WHERE event_id='j1'").fetchone()
+    assert got == ("Bash",)
+
+
+def test_event_add_malformed_row_does_not_abort_batch(tmp_path):
+    # A bad JSONL line is skipped (counted invalid), not fatal to the batch.
+    # Remove the JSONDecodeError except in cmd_event_add and this fails.
+    db = tmp_path / "events.db"
+    good = json.dumps({"session_id": "s1", "tool_name": "Bash", "event_id": "g1"})
+    good2 = json.dumps({"session_id": "s1", "tool_name": "Bash", "event_id": "g2"})
+    out = _run("event-add", "--db", str(db), stdin="\n".join([good, "not-json{{{", good2]) + "\n")
+    assert "inserted=2" in out.stdout
+    assert "invalid=1" in out.stdout
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
+
+
+def test_event_add_non_integer_flag_is_invalid_not_fatal(tmp_path):
+    # A non-numeric pre_complete/post_complete must be counted invalid, not
+    # crash the row with an uncaught ValueError. Revert the _validate_event
+    # flag check and this raises CalledProcessError instead.
+    db = tmp_path / "events.db"
+    bad = json.dumps({"session_id": "s", "tool_name": "t", "pre_complete": "yes"})
+    out = _run("event-add", "--db", str(db), stdin=bad + "\n")
+    assert "invalid=1" in out.stdout
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
 def test_finding_add_is_idempotent(tmp_path):
     db = tmp_path / "events.db"
     finding = {

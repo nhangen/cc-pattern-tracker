@@ -261,6 +261,13 @@ def _validate_event(row: dict) -> str | None:
     for f in REQUIRED_EVENT_FIELDS:
         if not row.get(f):
             return f"missing required field: {f}"
+    for f in ("pre_complete", "post_complete"):
+        v = row.get(f)
+        if v is not None:
+            try:
+                int(v)
+            except (TypeError, ValueError):
+                return f"non-integer {f}: {v!r}"
     return None
 
 
