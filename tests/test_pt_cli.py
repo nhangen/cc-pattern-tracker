@@ -70,7 +70,7 @@ def test_event_add_creates_missing_db_parent_dir(tmp_path):
     # A fresh clone has no data/ dir (data/ is gitignored). sqlite3.connect raises
     # "unable to open database file" when the parent is missing; the cron caller's
     # fire-and-forget event-add then silently never persists. Revert
-    # _connect_writable's mkdir and this fails with CalledProcessError.
+    # _connect's mkdir and this fails with CalledProcessError.
     db = tmp_path / "data" / "events.db"   # data/ does not exist yet
     ev = {"session_id": "s", "tool_name": "ollama-agent:cron-failure-digest"}
     out = _run("event-add", "--db", str(db), stdin=json.dumps(ev) + "\n")
@@ -87,6 +87,15 @@ def test_finding_add_creates_missing_db_parent_dir(tmp_path):
     assert "inserted=1" in out.stdout
     assert db.exists()
     assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 1
+
+
+def test_summary_creates_missing_db_parent_dir(tmp_path):
+    # Issue #12 asks for all four connect sites, not just the write verbs:
+    # summary on a fresh path with a missing parent dir must not crash.
+    db = tmp_path / "data" / "events.db"
+    out = _run("summary", "--db", str(db))
+    assert "Total events: 0" in out.stdout
+    assert db.exists()
 
 
 def test_event_add_carries_rules_loaded_hash(tmp_path):

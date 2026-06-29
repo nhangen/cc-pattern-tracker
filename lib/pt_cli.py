@@ -17,10 +17,13 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
     db.executescript(SCHEMA_PATH.read_text())
 
 
-def _connect_writable(db_path: str) -> sqlite3.Connection:
+def _connect(db_path: str) -> sqlite3.Connection:
     """Connect to the db, creating its parent directory first. sqlite3.connect
-    raises OperationalError ("unable to open database file") when the parent dir
-    is missing — which a fresh clone always hits, since data/ is gitignored."""
+    creates the DB file but NOT missing parent dirs, so it raises
+    OperationalError ("unable to open database file") when the parent is absent
+    — which a fresh clone always hits, since data/ is gitignored. Every command
+    routes through this so the connect path matches the file-writing sites, which
+    already mkdir their parents."""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(db_path)
 
@@ -33,7 +36,8 @@ def _finding_id(row: dict) -> str:
 
 
 def cmd_summary(args):
-    db = sqlite3.connect(args.db)
+    db = _connect(args.db)
+    _ensure_schema(db)
     total = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     sessions = db.execute("SELECT COUNT(DISTINCT session_id) FROM events").fetchone()[0]
     errors = db.execute("SELECT COUNT(*) FROM events WHERE exit_code != 0").fetchone()[0]
@@ -187,7 +191,7 @@ def cmd_finding_add(args):
     Re-runs of the same panel collide deterministically on finding_id, so
     ingest is idempotent via INSERT OR IGNORE.
     """
-    db = _connect_writable(args.db)
+    db = _connect(args.db)
     _ensure_schema(db)
 
     if args.json:
@@ -290,7 +294,7 @@ def cmd_event_add(args):
     hook path. event_id is minted when absent; supply a deterministic event_id to
     make re-emission idempotent (INSERT OR IGNORE on the primary key).
     """
-    db = _connect_writable(args.db)
+    db = _connect(args.db)
     _ensure_schema(db)
 
     if args.json:
@@ -340,7 +344,7 @@ def cmd_event_add(args):
 
 def cmd_findings_export(args):
     """Dump findings as JSONL for downstream cost-failure fusion."""
-    db = sqlite3.connect(args.db)
+    db = _connect(args.db)
     _ensure_schema(db)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
