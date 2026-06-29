@@ -98,6 +98,16 @@ def test_summary_creates_missing_db_parent_dir(tmp_path):
     assert db.exists()
 
 
+def test_findings_export_creates_missing_db_parent_dir(tmp_path):
+    # Fourth routed connect site (#12). findings-export on a fresh path with a
+    # missing parent dir must not crash; it exports zero findings.
+    db = tmp_path / "data" / "events.db"
+    out_file = tmp_path / "out" / "findings.jsonl"
+    out = _run("findings-export", "--db", str(db), "--out", str(out_file))
+    assert "wrote 0 findings" in out.stdout
+    assert db.exists()
+
+
 def test_event_add_carries_rules_loaded_hash(tmp_path):
     # The whole point of slice D: a local run's rules_loaded_hash lands in events.
     db = tmp_path / "events.db"
