@@ -17,6 +17,14 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
     db.executescript(SCHEMA_PATH.read_text())
 
 
+def _connect_writable(db_path: str) -> sqlite3.Connection:
+    """Connect to the db, creating its parent directory first. sqlite3.connect
+    raises OperationalError ("unable to open database file") when the parent dir
+    is missing — which a fresh clone always hits, since data/ is gitignored."""
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(db_path)
+
+
 def _finding_id(row: dict) -> str:
     """Deterministic ID from (pr_url, file_path, line_no, summary) so the
     same finding can't be ingested twice from re-runs of the same panel."""
@@ -179,7 +187,7 @@ def cmd_finding_add(args):
     Re-runs of the same panel collide deterministically on finding_id, so
     ingest is idempotent via INSERT OR IGNORE.
     """
-    db = sqlite3.connect(args.db)
+    db = _connect_writable(args.db)
     _ensure_schema(db)
 
     if args.json:
@@ -282,7 +290,7 @@ def cmd_event_add(args):
     hook path. event_id is minted when absent; supply a deterministic event_id to
     make re-emission idempotent (INSERT OR IGNORE on the primary key).
     """
-    db = sqlite3.connect(args.db)
+    db = _connect_writable(args.db)
     _ensure_schema(db)
 
     if args.json:
