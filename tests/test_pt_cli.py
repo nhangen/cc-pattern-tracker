@@ -66,6 +66,48 @@ def test_event_add_inserts_minimal(tmp_path):
     assert row == ("sess-x", "ollama-agent")
 
 
+def test_event_add_creates_missing_db_parent_dir(tmp_path):
+    # A fresh clone has no data/ dir (data/ is gitignored). sqlite3.connect raises
+    # "unable to open database file" when the parent is missing; the cron caller's
+    # fire-and-forget event-add then silently never persists. Revert
+    # _connect's mkdir and this fails with CalledProcessError.
+    db = tmp_path / "data" / "events.db"   # data/ does not exist yet
+    ev = {"session_id": "s", "tool_name": "ollama-agent:cron-failure-digest"}
+    out = _run("event-add", "--db", str(db), stdin=json.dumps(ev) + "\n")
+    assert "inserted=1" in out.stdout
+    assert db.exists()
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+
+def test_finding_add_creates_missing_db_parent_dir(tmp_path):
+    # Same fresh-clone gap on the finding-add write path.
+    db = tmp_path / "data" / "events.db"
+    finding = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "parent dir missing"}
+    out = _run("finding-add", "--db", str(db), stdin=json.dumps(finding) + "\n")
+    assert "inserted=1" in out.stdout
+    assert db.exists()
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 1
+
+
+def test_summary_creates_missing_db_parent_dir(tmp_path):
+    # Issue #12 asks for all four connect sites, not just the write verbs:
+    # summary on a fresh path with a missing parent dir must not crash.
+    db = tmp_path / "data" / "events.db"
+    out = _run("summary", "--db", str(db))
+    assert "Total events: 0" in out.stdout
+    assert db.exists()
+
+
+def test_findings_export_creates_missing_db_parent_dir(tmp_path):
+    # Fourth routed connect site (#12). findings-export on a fresh path with a
+    # missing parent dir must not crash; it exports zero findings.
+    db = tmp_path / "data" / "events.db"
+    out_file = tmp_path / "out" / "findings.jsonl"
+    out = _run("findings-export", "--db", str(db), "--out", str(out_file))
+    assert "wrote 0 findings" in out.stdout
+    assert db.exists()
+
+
 def test_event_add_carries_rules_loaded_hash(tmp_path):
     # The whole point of slice D: a local run's rules_loaded_hash lands in events.
     db = tmp_path / "events.db"
