@@ -25,6 +25,8 @@ Two Claude Code hooks (`PreToolUse` and `PostToolUse`) write a wide state row pe
 | `prompt_hash`, `rules_loaded_hash` | nullable — populated if hook payload carries them |
 | `exit_code`, `error_tail` | from PostToolUse |
 | `pre_complete`, `post_complete` | sentinel flags |
+| `turn_id` | correlates events within the same user turn |
+| `plugin_or_skill` | plugin/skill name active when the tool ran, if any |
 
 Model, cost, and duration come from `~/.claude/__store.db` at join time — never duplicated.
 
@@ -87,6 +89,8 @@ pt judge   [--budget-usd N]    # LLM-judge pass → labels_judge.jsonl (cost-bou
 pt export  [--out F.parquet]   # Join events + __store.db + both label files → parquet
 pt report  [--min-support N]   # Top feature→label correlations from parquet
 pt finding-add [--from-file F] # Ingest pr-review-panel findings (JSONL via stdin/--json/--from-file)
+pt event-add   [--from-file F] # Add events rows from outside the hook path (JSONL via stdin/--json/--from-file)
+                                #   [--db PATH] each row needs session_id + tool_name
 pt findings-export [--out F]   # Dump findings table to JSONL
 pt cost-by-failure             # Join findings to token-scope per-session cost
    [--by category|severity]    #   group by findings.category (default) or severity
@@ -208,7 +212,7 @@ prior_errors_count=3                     → confident_wrong_diagnosis      supp
 cd ~/ML-AI/claude/pattern-tracker
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 
-# Tests (31 currently)
+# Tests (68 currently)
 pytest tests/ -v
 
 # Run hooks locally without installing (manual smoke test)
