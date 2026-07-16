@@ -1,6 +1,6 @@
 {
   "name": "pattern-tracker",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Logs feature + outcome rows per tool call to SQLite for offline pattern mining.",
   "author": {
     "name": "nhangen"

@@ -1,4 +1,5 @@
 """pt CLI: pt summary, pt mine, pt export, pt finding-add, pt findings-export."""
+from __future__ import annotations  # PEP 604 `X | None` hints run on system python 3.9 (macOS)
 import argparse
 import hashlib
 import json
@@ -120,7 +121,7 @@ def cmd_export(args):
     import json, tempfile
     from datetime import datetime
     from pathlib import Path
-    from lib.join_features_labels import join_to_parquet
+    from lib.join_features_labels import build_tuples, write_tuples
 
     combined = Path(tempfile.mkstemp(suffix=".jsonl")[1])
     seen = set()
@@ -144,18 +145,21 @@ def cmd_export(args):
                         row["ts_epoch"] = None
                 out.write(json.dumps(row) + "\n")
 
-    join_to_parquet(
-        events_db=Path(args.db), store_db=Path(args.store),
-        labels=combined, out=Path(args.out),
+    rows = build_tuples(
+        events_db=Path(args.db), store_db=Path(args.store), labels=combined,
     )
-    print(f"wrote {args.out}")
+    write_tuples(rows, Path(args.out))
+    print(f"wrote {len(rows)} tuples to {args.out}")
 
 
 def cmd_report(args):
-    import pandas as pd
+    from lib.join_features_labels import read_tuples
     from lib.correlate import top_correlations
-    df = pd.read_parquet(args.parquet)
-    for r in top_correlations(df, min_support=args.min_support):
+    rows = read_tuples(Path(args.input))
+    if not any("cost_usd" in r for r in rows):
+        print("note: cost/model enrichment unavailable "
+              "(~/.claude/__store.db has no assistant_messages on this host)")
+    for r in top_correlations(rows, min_support=args.min_support):
         print(f"{r['feature']:40s} → {r['label']:35s} support={r['support']:4d}  rate={r['rate']:.2f}")
 
 
@@ -381,10 +385,10 @@ def main():
     e.add_argument("--store", default=str(Path.home() / ".claude" / "__store.db"))
     e.add_argument("--labels-phrase", default="data/labels.jsonl")
     e.add_argument("--labels-judge",  default="data/labels_judge.jsonl")
-    e.add_argument("--out", default="data/exports/tuples.parquet")
+    e.add_argument("--out", default="data/exports/tuples.jsonl")
     e.set_defaults(func=cmd_export)
     r = sub.add_parser("report")
-    r.add_argument("--parquet", default="data/exports/tuples.parquet")
+    r.add_argument("--input", "--parquet", dest="input", default="data/exports/tuples.jsonl")
     r.add_argument("--min-support", type=int, default=10)
     r.set_defaults(func=cmd_report)
 

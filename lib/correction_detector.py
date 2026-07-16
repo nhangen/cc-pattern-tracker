@@ -1,9 +1,10 @@
-"""Lightweight correction classifier driven by failure_taxonomy.yaml."""
+"""Lightweight correction classifier driven by failure_taxonomy.json."""
+from __future__ import annotations  # PEP 604 `X | None` hints run on system python 3.9 (macOS)
+import json
 from pathlib import Path
-import yaml
 
-TAX_PATH = Path(__file__).parent / "failure_taxonomy.yaml"
-_TAX = yaml.safe_load(TAX_PATH.read_text())
+TAX_PATH = Path(__file__).parent / "failure_taxonomy.json"
+_TAX = json.loads(TAX_PATH.read_text())
 
 
 def classify_correction(text: str) -> str | None:

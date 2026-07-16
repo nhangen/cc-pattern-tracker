@@ -11,10 +11,9 @@ estimated, so the budget cap in `pt judge` stays accurate.
 import json
 import subprocess
 from pathlib import Path
-import yaml
 
 _PROMPT = (Path(__file__).parent / "judge_prompt.md").read_text()
-_TAX = yaml.safe_load((Path(__file__).parent / "failure_taxonomy.yaml").read_text())
+_TAX = json.loads((Path(__file__).parent / "failure_taxonomy.json").read_text())
 _TAX_JSON = json.dumps({cls: body["source_rule"] for cls, body in _TAX.items()})
 
 _BASE_CMD = [
