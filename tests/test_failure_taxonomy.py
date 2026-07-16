@@ -1,11 +1,11 @@
-import yaml
+import json
 from pathlib import Path
 
-TAX = Path(__file__).parent.parent / "lib" / "failure_taxonomy.yaml"
+TAX = Path(__file__).parent.parent / "lib" / "failure_taxonomy.json"
 
 
 def test_taxonomy_has_required_classes():
-    data = yaml.safe_load(TAX.read_text())
+    data = json.loads(TAX.read_text())
     required = {
         "ignored_explicit_instruction",
         "hallucinated_followup",
@@ -20,7 +20,7 @@ def test_taxonomy_has_required_classes():
 
 
 def test_each_class_has_correction_phrases_and_source_rule():
-    data = yaml.safe_load(TAX.read_text())
+    data = json.loads(TAX.read_text())
     for cls, body in data.items():
         assert "correction_phrases" in body, cls
         assert "source_rule" in body, cls

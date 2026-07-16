@@ -2,6 +2,7 @@
 
 Reads the Claude Code hook payload from stdin, validates fields, then INSERTs.
 """
+from __future__ import annotations  # PEP 604 `X | None` hints run on system python 3.9 (macOS)
 import argparse
 import json
 import os

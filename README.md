@@ -4,9 +4,9 @@ Capture `(features, label, evidence)` tuples from Claude Code sessions as machin
 
 ## Why
 
-claude-mem captures *narrative observations* of sessions ("Claude learned X, did Y"). token-scope captures *cost and usage*. pattern-tracker captures **decisions and outcomes** in structured form, with explicit failure labels tied to your own rules. The output is a parquet table ready for fine-tuning, DPO preference pairs, or held-out eval against a Claude Code agent you build.
+claude-mem captures *narrative observations* of sessions ("Claude learned X, did Y"). token-scope captures *cost and usage*. pattern-tracker captures **decisions and outcomes** in structured form, with explicit failure labels tied to your own rules. The output is a JSONL table ready for fine-tuning, DPO preference pairs, or held-out eval against a Claude Code agent you build.
 
-The eight failure classes aren't invented — they map 1:1 to rules in your `~/.claude/rules/` directory. Every class cites a `source_rule` in `lib/failure_taxonomy.yaml`. If your behavior pattern doesn't have a rule for it yet, it isn't in the taxonomy yet either.
+The eight failure classes aren't invented — they map 1:1 to rules in your `~/.claude/rules/` directory. Every class cites a `source_rule` in `lib/failure_taxonomy.json`. If your behavior pattern doesn't have a rule for it yet, it isn't in the taxonomy yet either.
 
 ## How it works
 
@@ -35,13 +35,13 @@ Model, cost, and duration come from `~/.claude/__store.db` at join time — neve
 Two label sources, dual-sourced so silent failures (where the user didn't vocally correct) don't get missed:
 
 1. **Phrase-based detector** — scans user turns for canned correction phrases per failure class. Free, fast, low recall.
-2. **LLM-as-judge** — sends `(user_turn, assistant_turn)` pairs to Haiku via Anthropic SDK or `claude --print`. Catches silent failures, cites evidence. ~$0.001/call (API key) or ~$0.06/call (subscription).
+2. **LLM-as-judge** — sends `(user_turn, assistant_turn)` pairs to Haiku by shelling out to `claude --print` (subscription auth, no API key or SDK). Catches silent failures, cites evidence. ~$0.06/call.
 
 Both filter out skill-injection content (`Base directory for this skill:`, `<command-name>`, `<system-reminder>`, etc.) so the SKILL.md text loaded into user turns doesn't get mistaken for corrections.
 
 ### Phase 3 — Joiner + correlator
 
-Joins `events.db` + `~/.claude/__store.db` + both label files into a parquet of `(features, model, cost_usd, duration_ms, label, correction_text, evidence_quote, source)`. The `/pattern-report` skill runs the full pipeline and prints top feature→label correlations.
+Joins `events.db` + `~/.claude/__store.db` + both label files into a JSONL table of `(features, model, cost_usd, duration_ms, label, correction_text, evidence_quote, source)`. `__store.db` is optional: on hosts where Claude Code doesn't populate it, the model/cost/duration columns are simply omitted and the join still runs. The `/pattern-report` skill runs the full pipeline (stdlib only, no venv) and prints top feature→label correlations.
 
 ## Hooks
 
@@ -77,7 +77,7 @@ Eight classes, each seeded from a rule:
 | `misframed_deliverable` | `audit-against-the-ask` |
 | `narrow_fix_when_pattern` | `safety-invariant-scope` |
 
-Edit `lib/failure_taxonomy.yaml` to add classes or tighten phrases. The test `tests/test_failure_taxonomy.py` enforces every class has a `source_rule` and ≥2 `correction_phrases`.
+Edit `lib/failure_taxonomy.json` to add classes or tighten phrases. The test `tests/test_failure_taxonomy.py` enforces every class has a `source_rule` and ≥2 `correction_phrases`.
 
 ## CLI
 
@@ -86,8 +86,8 @@ pt summary                     # Event counts, sessions, error rate, top tools
 pt mine    [--out F]           # Phrase-detector pass → labels.jsonl
 pt judge   [--budget-usd N]    # LLM-judge pass → labels_judge.jsonl (cost-bounded)
            [--max-turns N]
-pt export  [--out F.parquet]   # Join events + __store.db + both label files → parquet
-pt report  [--min-support N]   # Top feature→label correlations from parquet
+pt export  [--out F.jsonl]     # Join events + __store.db + both label files → JSONL tuples
+pt report  [--min-support N]   # Top feature→label correlations from the JSONL tuples
 pt finding-add [--from-file F] # Ingest pr-review-panel findings (JSONL via stdin/--json/--from-file)
 pt event-add   [--from-file F] # Add events rows from outside the hook path (JSONL via stdin/--json/--from-file)
                                 #   [--db PATH] each row needs session_id + tool_name
@@ -199,8 +199,8 @@ prior_errors_count=3                     → confident_wrong_diagnosis      supp
 
 ## Known limitations
 
-- **`__store.db` is Claude Code's internal store.** This plugin reads from it but never writes. The schema (`session_id`, `timestamp`, `model`, `cost_usd`, `duration_ms`) is what's in place as of 4.x.
-- **LLM judge cost varies by auth.** ~$0.001/call with `ANTHROPIC_API_KEY` (direct SDK), ~$0.06/call shelling out to `claude --print` because the CLI ships ~100K tokens of internal context per invocation. For a 1000-call training set: $1 vs $60.
+- **`__store.db` is Claude Code's internal store.** This plugin reads from it but never writes, and never creates it. The schema (`session_id`, `timestamp`, `model`, `cost_usd`, `duration_ms`) is what's in place as of 4.x. It is **not populated on every host** — CLI-only hosts keep history in `projects/*.jsonl` and leave `__store.db` empty. When it's absent or has no `assistant_messages` table, `export`/`report` degrade gracefully (no model/cost enrichment) rather than crash.
+- **LLM judge cost.** ~$0.06/call shelling out to `claude --print` because the CLI ships ~100K tokens of internal context per invocation. For a 1000-call training set: ~$60. (No direct-SDK/API-key path — subscription auth only.)
 - **Phrase detector recall depends on your correction style.** If you correct via redirection ("instead of X try Y") rather than vocal pushback ("stop", "no"), the phrase detector will find nothing. The LLM judge is the fallback in that case.
 - **Subagent JSONLs are scanned.** Required to catch corrections directed at subagents (where most live). jq-truncated reads only — full files are never loaded into Python or context, per the `no-cat-subagent-jsonl` convention.
 - **`prompt_hash` and `rules_loaded_hash` are nullable.** Populated only if the Claude Code hook payload carries them. Without these, the feature vector is coarse — you can correlate failures with cwd/branch/tool but not with which exact rules were in scope.
@@ -208,12 +208,12 @@ prior_errors_count=3                     → confident_wrong_diagnosis      supp
 ## Development
 
 ```bash
-# Setup
+# Runtime needs no venv — hooks and `pt` run on the system python3 (>=3.9),
+# stdlib only. A venv is only needed to run the test suite (pytest).
 cd ~/ML-AI/claude/pattern-tracker
-uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 
-# Tests (68 currently)
-pytest tests/ -v
+# Tests (72 currently)
+uv run --with pytest pytest tests/ -v   # or: pip install pytest && pytest tests/ -v
 
 # Run hooks locally without installing (manual smoke test)
 echo '{"session_id":"smoke-1","tool_name":"Read"}' | hooks/pre-tool-snapshot.sh
@@ -232,13 +232,13 @@ lib/
   schema.sql                         # events table DDL
   hook_writer.py                     # parameterized DB writes (the entire attack surface)
   snapshot_state.py                  # state collector
-  failure_taxonomy.yaml              # 8 classes seeded from rules
+  failure_taxonomy.json              # 8 classes seeded from rules
   transcript_scanner.py              # jq-truncated JSONL reader
   correction_detector.py             # phrase-based labeler
   label_miner.py                     # mine_dir → labels.jsonl
   llm_judge.py                       # LLM-as-judge → labels_judge.jsonl
   judge_prompt.md                    # judge prompt template
-  join_features_labels.py            # parquet joiner
+  join_features_labels.py            # stdlib sqlite→JSONL tuple joiner
   correlate.py                       # feature→label correlation surface
   pt_cli.py                          # `pt` CLI entry point
 skills/pattern-report/SKILL.md       # /pattern-report skill manifest
