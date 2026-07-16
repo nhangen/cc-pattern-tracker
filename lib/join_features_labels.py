@@ -12,6 +12,7 @@ keep history only in projects/*.jsonl). A missing store file, or a store with
 no `assistant_messages` table, degrades gracefully: model/cost/duration are
 simply left off the tuple and the join still produces its rows.
 """
+from __future__ import annotations  # PEP 604 `X | None` hints run on system python 3.9 (macOS)
 import json
 import sqlite3
 from pathlib import Path
@@ -20,30 +21,51 @@ _STORE_COLS = ("session_id", "timestamp", "model", "cost_usd", "duration_ms")
 
 
 def _load_store(store_db: Path) -> list[dict]:
-    """Return assistant_messages rows, or [] when the store or table is absent.
+    """Return assistant_messages rows, or [] when the store or table is
+    *genuinely* absent — a missing file, an empty file, or a missing
+    `assistant_messages` table.
 
-    Opens read-only via a URI so a missing file is not silently created as a
-    0-byte DB (sqlite3.connect(path) would create it as a side effect)."""
+    Any other fault (permission denied, locked DB, disk error, or schema drift
+    such as a renamed/dropped column — `__store.db` is Claude Code's private
+    store whose schema we don't control) is re-raised rather than swallowed, so
+    it surfaces instead of masquerading as an empty store and being misreported
+    downstream as "not populated on this host". Mirrors the inspect-and-reraise
+    idiom already used in hook_writer._ensure_db.
+
+    Opens read-only via a percent-encoded URI so a missing file is not created
+    as a 0-byte side effect (sqlite3.connect(path) would create it)."""
     if not store_db.exists() or store_db.stat().st_size == 0:
         return []
-    uri = f"file:{store_db}?mode=ro"
-    try:
-        conn = sqlite3.connect(uri, uri=True)
-    except sqlite3.OperationalError:
-        return []
+    uri = f"{store_db.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
     try:
         conn.row_factory = sqlite3.Row
         try:
-            cur = conn.execute(
-                "SELECT session_id, timestamp, model, cost_usd, duration_ms "
-                "FROM assistant_messages"
-            )
-        except sqlite3.OperationalError:
-            # no such table: assistant_messages
-            return []
+            cur = conn.execute(f"SELECT {', '.join(_STORE_COLS)} FROM assistant_messages")
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                return []
+            raise
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
+
+
+def enrichment_note(rows: list[dict]) -> str | None:
+    """Return the stderr note describing cost/model enrichment coverage, or None
+    when the report is fully enriched. `build_tuples` sets the `cost_usd` key
+    only on rows a store message matched, so key-presence counts real coverage
+    (distinct from an attempted-but-null value)."""
+    if not rows:
+        return ("no tuples to report — run `pt export` first "
+                "(or no labels matched captured events)")
+    enriched = sum("cost_usd" in r for r in rows)
+    if enriched == 0:
+        return ("cost/model enrichment unavailable — "
+                "~/.claude/__store.db not populated on this host")
+    if enriched < len(rows):
+        return f"cost/model enrichment on {enriched}/{len(rows)} rows"
+    return None
 
 
 def build_tuples(events_db: Path, store_db: Path, labels: Path) -> list[dict]:

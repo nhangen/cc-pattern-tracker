@@ -123,42 +123,47 @@ def cmd_export(args):
     from pathlib import Path
     from lib.join_features_labels import build_tuples, write_tuples
 
-    combined = Path(tempfile.mkstemp(suffix=".jsonl")[1])
-    seen = set()
-    with combined.open("w") as out:
-        for src in [args.labels_phrase, args.labels_judge]:
-            p = Path(src)
-            if not p.exists():
-                continue
-            for line in p.read_text().splitlines():
-                if not line.strip():
+    fd, combined_name = tempfile.mkstemp(suffix=".jsonl")
+    os.close(fd)  # we reopen by path below; leaving fd open leaks a descriptor
+    combined = Path(combined_name)
+    try:
+        seen = set()
+        with combined.open("w") as out:
+            for src in [args.labels_phrase, args.labels_judge]:
+                p = Path(src)
+                if not p.exists():
                     continue
-                row = json.loads(line)
-                key = (row.get("session_id"), row.get("turn_idx"))
-                if key in seen:
-                    continue
-                seen.add(key)
-                if "ts" in row and "ts_epoch" not in row:
-                    try:
-                        row["ts_epoch"] = int(datetime.fromisoformat(row["ts"].replace("Z","+00:00")).timestamp())
-                    except Exception:
-                        row["ts_epoch"] = None
-                out.write(json.dumps(row) + "\n")
+                for line in p.read_text().splitlines():
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    key = (row.get("session_id"), row.get("turn_idx"))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if "ts" in row and "ts_epoch" not in row:
+                        try:
+                            row["ts_epoch"] = int(datetime.fromisoformat(row["ts"].replace("Z","+00:00")).timestamp())
+                        except Exception:
+                            row["ts_epoch"] = None
+                    out.write(json.dumps(row) + "\n")
 
-    rows = build_tuples(
-        events_db=Path(args.db), store_db=Path(args.store), labels=combined,
-    )
+        rows = build_tuples(
+            events_db=Path(args.db), store_db=Path(args.store), labels=combined,
+        )
+    finally:
+        combined.unlink(missing_ok=True)
     write_tuples(rows, Path(args.out))
     print(f"wrote {len(rows)} tuples to {args.out}")
 
 
 def cmd_report(args):
-    from lib.join_features_labels import read_tuples
+    from lib.join_features_labels import read_tuples, enrichment_note
     from lib.correlate import top_correlations
     rows = read_tuples(Path(args.input))
-    if not any("cost_usd" in r for r in rows):
-        print("note: cost/model enrichment unavailable "
-              "(~/.claude/__store.db has no assistant_messages on this host)")
+    note = enrichment_note(rows)
+    if note:
+        print(f"note: {note}", file=sys.stderr)
     for r in top_correlations(rows, min_support=args.min_support):
         print(f"{r['feature']:40s} → {r['label']:35s} support={r['support']:4d}  rate={r['rate']:.2f}")
 
@@ -388,7 +393,7 @@ def main():
     e.add_argument("--out", default="data/exports/tuples.jsonl")
     e.set_defaults(func=cmd_export)
     r = sub.add_parser("report")
-    r.add_argument("--input", "--parquet", dest="input", default="data/exports/tuples.jsonl")
+    r.add_argument("--input", default="data/exports/tuples.jsonl")
     r.add_argument("--min-support", type=int, default=10)
     r.set_defaults(func=cmd_report)
 
