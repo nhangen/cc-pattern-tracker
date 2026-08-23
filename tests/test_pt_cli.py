@@ -255,12 +255,13 @@ def test_finding_add_normalizes_category(tmp_path):
 
 
 def test_finding_add_warns_when_session_id_unset(tmp_path, monkeypatch):
-    """When neither the row nor $CLAUDE_SESSION_ID provides a session_id,
+    """When neither the row nor any harness detection provides a session_id,
     surface a stderr warning and tally — silent NULL session_id breaks the
     cost-by-failure fusion view because the join key is missing."""
     db = tmp_path / "events.db"
     finding = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "no session"}
-    env = {k: v for k, v in __import__("os").environ.items() if k != "CLAUDE_SESSION_ID"}
+    env = {k: v for k, v in __import__("os").environ.items()
+           if k not in ("CLAUDE_SESSION_ID", "OPENCODE")}
     out = subprocess.run(
         ["python", "-m", "lib.pt_cli", "finding-add", "--db", str(db)],
         cwd=REPO, capture_output=True, text=True,
