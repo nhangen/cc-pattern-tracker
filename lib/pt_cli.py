@@ -190,6 +190,32 @@ def _normalize_category(raw):
     return raw.strip().lower().replace("_", "-")
 
 
+def _detect_session_id(cwd: str) -> str | None:
+    """Best-effort session attribution for non-Claude-Code harnesses.
+
+    Claude Code exports $CLAUDE_SESSION_ID, so that path never lands here.
+    OpenCode sets OPENCODE=1 but no session env var; its sessions live in
+    ~/.local/share/opencode/opencode.db keyed by project directory, and the
+    most-recently-updated row for this cwd is the live one. Anything else
+    returns None — callers stay unattributed rather than guessing."""
+    if os.environ.get("OPENCODE") != "1":
+        return None
+    db_path = Path.home() / ".local/share/opencode/opencode.db"
+    if not db_path.exists():
+        return None
+    try:
+        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        row = db.execute(
+            "SELECT id FROM session WHERE directory = ? "
+            "ORDER BY time_updated DESC LIMIT 1",
+            (cwd,),
+        ).fetchone()
+        db.close()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
+
+
 def cmd_finding_add(args):
     """Ingest pr-review-panel findings into the findings table.
 
@@ -211,6 +237,8 @@ def cmd_finding_add(args):
         raw_lines = [l for l in sys.stdin if l.strip()]
 
     session_id_default = os.environ.get("CLAUDE_SESSION_ID")
+    if not session_id_default:
+        session_id_default = _detect_session_id(os.getcwd())
     inserted = skipped = updated = invalid = no_session_id = 0
     rows = []
     for raw in raw_lines:
@@ -231,8 +259,8 @@ def cmd_finding_add(args):
             no_session_id += 1
             print(
                 f"  warn: session_id missing for {row.get('pr_url')} — "
-                "$CLAUDE_SESSION_ID is unset and row carries no session_id. "
-                "Row will be unattributable in cost-by-failure fusion.",
+                "no harness session could be detected. "
+                "Row will be unattributable in cost-by-fusion.",
                 file=sys.stderr,
             )
         existing = db.execute(
