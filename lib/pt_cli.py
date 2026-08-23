@@ -205,9 +205,11 @@ def _detect_session_id(cwd: str) -> str | None:
         return None
     try:
         db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        # Panels ingest from inside a repo subdir while the harness session
+        # is keyed on the tree root; match the deepest ancestor directory.
         row = db.execute(
-            "SELECT id FROM session WHERE directory = ? "
-            "ORDER BY time_updated DESC LIMIT 1",
+            "SELECT id FROM session WHERE ? LIKE directory || '%' "
+            "ORDER BY length(directory) DESC, time_updated DESC LIMIT 1",
             (cwd,),
         ).fetchone()
         db.close()
