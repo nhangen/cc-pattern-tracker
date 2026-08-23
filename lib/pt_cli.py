@@ -190,7 +190,7 @@ def _normalize_category(raw):
     return raw.strip().lower().replace("_", "-")
 
 
-def _detect_session_id(cwd: str) -> str | None:
+def _detect_session_id(cwd: str, db_path: str | None = None) -> str | None:
     """Best-effort session attribution for non-Claude-Code harnesses.
 
     Claude Code exports $CLAUDE_SESSION_ID, so that path never lands here.
@@ -200,21 +200,33 @@ def _detect_session_id(cwd: str) -> str | None:
     returns None — callers stay unattributed rather than guessing."""
     if os.environ.get("OPENCODE") != "1":
         return None
-    db_path = Path.home() / ".local/share/opencode/opencode.db"
-    if not db_path.exists():
+    if db_path is None:
+        data_root = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
+        db_path = str(Path(data_root) / "opencode" / "opencode.db")
+    if not Path(db_path).exists():
         return None
     try:
-        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        # Panels ingest from inside a repo subdir while the harness session
-        # is keyed on the tree root; match the deepest ancestor directory.
-        row = db.execute(
-            "SELECT id FROM session WHERE ? LIKE directory || '%' "
-            "ORDER BY length(directory) DESC, time_updated DESC LIMIT 1",
-            (cwd,),
-        ).fetchone()
-        db.close()
-        return row[0] if row else None
-    except sqlite3.Error:
+        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            # Panels ingest from inside a repo subdir while the harness session
+            # is keyed on the tree root. Match on real path boundaries in Python,
+            # deepest ancestor wins — SQL LIKE would treat '_' as a wildcard and
+            # let sibling roots (/a/b versus /a/b_other) steal attribution.
+            cwd_norm = os.path.normpath(cwd)
+            best_id, best_key = None, (-1, -1)
+            for sid, directory, updated in db.execute(
+                "SELECT id, directory, time_updated FROM session"
+            ):
+                root = os.path.normpath(directory or "")
+                if cwd_norm == root or cwd_norm.startswith(root.rstrip(os.sep) + os.sep):
+                    key = (len(root), updated)
+                    if key > best_key:
+                        best_id, best_key = sid, key
+        finally:
+            db.close()
+        return best_id
+    except sqlite3.Error as exc:
+        print(f"  warn: opencode session detection failed ({exc}) — rows will be unattributed", file=sys.stderr)
         return None
 
 
