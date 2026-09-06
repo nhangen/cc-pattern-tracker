@@ -10,6 +10,7 @@ import time
 import uuid
 from pathlib import Path
 from lib.label_miner import mine_dir
+from lib.db_path import resolve_db_path
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -18,15 +19,40 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
     db.executescript(SCHEMA_PATH.read_text())
 
 
-def _connect(db_path: str) -> sqlite3.Connection:
+def _connect(db_path: str | Path) -> sqlite3.Connection:
     """Connect to the db, creating its parent directory first. sqlite3.connect
     creates the DB file but NOT missing parent dirs, so it raises
     OperationalError ("unable to open database file") when the parent is absent
-    — which a fresh clone always hits, since data/ is gitignored. Every command
-    routes through this so the connect path matches the file-writing sites, which
-    already mkdir their parents."""
+    — which a fresh clone always hits, since data/ is gitignored. Every write-side
+    command routes through this so the connect path matches the file-writing
+    sites, which already mkdir their parents. Read-side commands never call this
+    with a nonexistent path — they check existence first via `_resolve_read_db`."""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(db_path)
+    return sqlite3.connect(str(db_path))
+
+
+def _resolve_read_db(explicit_db: str | None) -> Path:
+    """Resolve `--db` for a read-side command (summary, export, findings-export).
+
+    The bug this closes is specifically the *default*: a relative `data/events.db`
+    default let `sqlite3.connect` silently create an empty DB at whatever the
+    caller's cwd happened to be (nhangen/cc-pattern-tracker#25) — a read command
+    then reported "0 events" instead of failing, and that empty file became a
+    second database the hooks never wrote to. So when no `--db` was passed and
+    the resolved path doesn't exist, this is a hard error.
+
+    An explicit `--db` to a path that doesn't exist yet keeps the older
+    create-on-read behavior `tests/test_pt_cli.py` already pins (issue #12,
+    `test_summary_creates_missing_db_parent_dir` /
+    `test_findings_export_creates_missing_db_parent_dir`) — the caller named the
+    path on purpose, so there's no ambiguity to protect against."""
+    db_path = resolve_db_path(explicit_db)
+    if explicit_db is None and not db_path.exists():
+        raise SystemExit(
+            f"pattern-tracker: no database at {db_path}. "
+            "Run a Claude Code session with the hooks installed (or pass --db) first."
+        )
+    return db_path
 
 
 def _finding_id(row: dict) -> str:
@@ -37,7 +63,7 @@ def _finding_id(row: dict) -> str:
 
 
 def cmd_summary(args):
-    db = _connect(args.db)
+    db = _connect(_resolve_read_db(args.db))
     _ensure_schema(db)
     total = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     sessions = db.execute("SELECT COUNT(DISTINCT session_id) FROM events").fetchone()[0]
@@ -149,7 +175,9 @@ def cmd_export(args):
                     out.write(json.dumps(row) + "\n")
 
         rows = build_tuples(
-            events_db=Path(args.db), store_db=Path(args.store), labels=combined,
+            events_db=_resolve_read_db(args.db),
+            store_db=Path(args.store),
+            labels=combined,
         )
     finally:
         combined.unlink(missing_ok=True)
@@ -259,7 +287,7 @@ def cmd_finding_add(args):
     Re-runs of the same panel collide deterministically on finding_id, so
     ingest is idempotent via INSERT OR IGNORE.
     """
-    db = _connect(args.db)
+    db = _connect(resolve_db_path(args.db))
     _ensure_schema(db)
 
     if args.json:
@@ -364,7 +392,7 @@ def cmd_event_add(args):
     hook path. event_id is minted when absent; supply a deterministic event_id to
     make re-emission idempotent (INSERT OR IGNORE on the primary key).
     """
-    db = _connect(args.db)
+    db = _connect(resolve_db_path(args.db))
     _ensure_schema(db)
 
     if args.json:
@@ -414,7 +442,7 @@ def cmd_event_add(args):
 
 def cmd_findings_export(args):
     """Dump findings as JSONL for downstream cost-failure fusion."""
-    db = _connect(args.db)
+    db = _connect(_resolve_read_db(args.db))
     _ensure_schema(db)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -434,7 +462,8 @@ def main():
     p = argparse.ArgumentParser(prog="pt")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("summary")
-    s.add_argument("--db", default="data/events.db")
+    s.add_argument("--db", default=None,
+                   help="pattern-tracker events DB. Default: $PT_DB, else the XDG path the hooks use, else the legacy dev-tree DB when present (see lib/db_path.py).")
     s.set_defaults(func=cmd_summary)
     m = sub.add_parser("mine")
     m.add_argument("--transcripts", default=str(Path.home() / ".claude" / "projects"))
@@ -447,7 +476,8 @@ def main():
     j.add_argument("--max-turns", type=int, default=5000)
     j.set_defaults(func=cmd_judge)
     e = sub.add_parser("export")
-    e.add_argument("--db", default="data/events.db")
+    e.add_argument("--db", default=None,
+                   help="pattern-tracker events DB. Default: $PT_DB, else the XDG path the hooks use, else the legacy dev-tree DB when present (see lib/db_path.py).")
     e.add_argument("--store", default=str(Path.home() / ".claude" / "__store.db"))
     e.add_argument("--labels-phrase", default="data/labels.jsonl")
     e.add_argument("--labels-judge",  default="data/labels_judge.jsonl")
@@ -459,19 +489,22 @@ def main():
     r.set_defaults(func=cmd_report)
 
     fa = sub.add_parser("finding-add", help="Ingest pr-review-panel findings (JSONL via stdin, --json, or --from-file).")
-    fa.add_argument("--db", default="data/events.db")
+    fa.add_argument("--db", default=None,
+                   help="pattern-tracker events DB. Default: $PT_DB, else the XDG path the hooks use, else the legacy dev-tree DB when present (see lib/db_path.py).")
     fa.add_argument("--json", help="Single finding as a JSON string.")
     fa.add_argument("--from-file", help="Path to a JSONL file of findings.")
     fa.set_defaults(func=cmd_finding_add)
 
     ea = sub.add_parser("event-add", help="Add events rows from outside the hook path (JSONL via stdin, --json, or --from-file).")
-    ea.add_argument("--db", default="data/events.db")
+    ea.add_argument("--db", default=None,
+                   help="pattern-tracker events DB. Default: $PT_DB, else the XDG path the hooks use, else the legacy dev-tree DB when present (see lib/db_path.py).")
     ea.add_argument("--json", help="Single event as a JSON string.")
     ea.add_argument("--from-file", help="Path to a JSONL file of events.")
     ea.set_defaults(func=cmd_event_add)
 
     fe = sub.add_parser("findings-export", help="Dump findings table to JSONL.")
-    fe.add_argument("--db", default="data/events.db")
+    fe.add_argument("--db", default=None,
+                   help="pattern-tracker events DB. Default: $PT_DB, else the XDG path the hooks use, else the legacy dev-tree DB when present (see lib/db_path.py).")
     fe.add_argument("--out", default="data/exports/findings.jsonl")
     fe.set_defaults(func=cmd_findings_export)
 
