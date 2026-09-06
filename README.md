@@ -111,7 +111,9 @@ All commands default to project-relative `data/` paths.
 - Which sessions racked up the most cost while accumulating review findings?
 
 It joins the `findings` table (from `pt finding-add`, populated by the
-`pr-review-panel` skill at runtime via `$CLAUDE_SESSION_ID`) to token-scope's
+`pr-review-panel` skill at runtime via `$CLAUDE_CODE_SESSION_ID` — the real
+Claude Code session env var; `$CLAUDE_SESSION_ID` never exists, see #16) to
+token-scope's
 per-session cost data on `session_id`. token-scope is invoked as a
 subprocess (`token-scope --sessions --json --since N --limit M`) and reads
 Claude Code's JSONL session logs directly — no dependency on the deprecated
@@ -155,7 +157,11 @@ failure modes).
 Two classes of findings can't be joined and are surfaced in a footer rather
 than silently dropped:
 
-- **NULL session_id** — finding ingested without `$CLAUDE_SESSION_ID` set.
+- **NULL session_id** — finding ingested with neither a row-level
+  `session_id`, `$CLAUDE_CODE_SESSION_ID`, nor a detectable non-Claude-Code
+  harness session (e.g. `finding-add` invoked outside any harness, or a row
+  ingested before #16 shipped — those pre-existing rows can't be repaired by
+  re-ingesting, since `_finding_id` dedup short-circuits before any update).
 - **Orphan session_id** — finding's session isn't in token-scope's window
   (e.g. older than `--since`, beyond `--fetch-limit`, or from a machine whose
   JSONL logs token-scope doesn't see). Widen `--since`/`--fetch-limit` to recover.
