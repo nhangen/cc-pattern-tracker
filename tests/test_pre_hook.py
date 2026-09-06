@@ -1,11 +1,25 @@
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 HOOK = PROJECT_ROOT / "hooks" / "pre-tool-snapshot.sh"
+
+
+def _copy_plugin_root(dest: Path) -> Path:
+    """Build a fixture 'installed plugin cache' — a copy of hooks/ and lib/,
+    the two directories the hook actually needs — independent of the dev
+    host's source tree at $HOME/ML-AI/claude/pattern-tracker."""
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(PROJECT_ROOT / "hooks", dest / "hooks")
+    shutil.copytree(
+        PROJECT_ROOT / "lib", dest / "lib",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    return dest
 
 
 def _run(payload, env_overrides):
@@ -143,6 +157,137 @@ def test_pre_hook_migration_is_idempotent(tmp_path):
     assert r2.returncode == 0, r2.stderr
     n = sqlite3.connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0]
     assert n == 2
+
+
+def test_pre_hook_resolves_project_dir_from_claude_plugin_root(tmp_path):
+    """Issue #22: on a host with no ~/ML-AI source tree (container, second
+    machine), the hook must resolve PT_PROJECT_DIR from CLAUDE_PLUGIN_ROOT —
+    the installed plugin cache — rather than dying on a hardcoded dev-host
+    path. FAILS on unpatched main: PT_PROJECT_DIR falls back to
+    $HOME/ML-AI/claude/pattern-tracker, which doesn't exist under this HOME,
+    and `cd` into it dies under `set -e`."""
+    plugin_root = _copy_plugin_root(tmp_path / "plugin_root")
+    home = tmp_path / "home"
+    home.mkdir()
+    db = tmp_path / "events.db"
+
+    env = os.environ.copy()
+    env.pop("PT_PROJECT_DIR", None)
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    env["PT_DB"] = str(db)
+
+    hook = plugin_root / "hooks" / "pre-tool-snapshot.sh"
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps({"session_id": "sess-host", "tool_name": "Read"}),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    rows = list(sqlite3.connect(db).execute("SELECT session_id, tool_name FROM events"))
+    assert rows == [("sess-host", "Read")]
+
+
+def test_pre_hook_db_default_does_not_land_under_plugin_cache(tmp_path):
+    """Issue #22: PT_DB must be decoupled from PT_PROJECT_DIR. When
+    PT_PROJECT_DIR is defaulted from CLAUDE_PLUGIN_ROOT (the versioned,
+    update-discarded plugin cache), the database must NOT be created
+    anywhere under it — it belongs in a durable, XDG-style data dir."""
+    plugin_root = _copy_plugin_root(tmp_path / "plugin_root")
+    home = tmp_path / "home"
+    home.mkdir()
+    xdg_data = tmp_path / "xdgdata"
+
+    env = os.environ.copy()
+    env.pop("PT_PROJECT_DIR", None)
+    env.pop("PT_DB", None)
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    env["XDG_DATA_HOME"] = str(xdg_data)
+
+    hook = plugin_root / "hooks" / "pre-tool-snapshot.sh"
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps({"session_id": "sess-host2", "tool_name": "Bash"}),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+    dbs_under_plugin_cache = list(plugin_root.rglob("events.db"))
+    assert dbs_under_plugin_cache == [], (
+        f"events.db must not be created under the plugin cache, found: {dbs_under_plugin_cache}"
+    )
+
+    expected_db = xdg_data / "pattern-tracker" / "events.db"
+    assert expected_db.exists(), f"expected db at {expected_db}"
+    rows = list(sqlite3.connect(expected_db).execute("SELECT session_id, tool_name FROM events"))
+    assert rows == [("sess-host2", "Bash")]
+
+
+def test_pre_hook_falls_back_to_legacy_db_when_present(tmp_path):
+    """Issue #22: existing dev-host data at the legacy
+    ~/ML-AI/claude/pattern-tracker/data/events.db location must not be
+    orphaned by the PT_DB default move — it's read as a fallback when the
+    new XDG-style location doesn't yet have a database of its own."""
+    plugin_root = _copy_plugin_root(tmp_path / "plugin_root")
+    home = tmp_path / "home"
+    legacy_dir = home / "ML-AI" / "claude" / "pattern-tracker" / "data"
+    legacy_dir.mkdir(parents=True)
+    legacy_db = legacy_dir / "events.db"
+    legacy_conn = sqlite3.connect(legacy_db)
+    legacy_conn.executescript((PROJECT_ROOT / "lib" / "schema.sql").read_text())
+    legacy_conn.close()  # pre-existing dev-host db the fallback must find
+
+    env = os.environ.copy()
+    env.pop("PT_PROJECT_DIR", None)
+    env.pop("PT_DB", None)
+    env.pop("XDG_DATA_HOME", None)
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+
+    hook = plugin_root / "hooks" / "pre-tool-snapshot.sh"
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps({"session_id": "sess-legacy", "tool_name": "Read"}),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert legacy_db.exists(), "legacy db location must be used as fallback"
+    rows = list(sqlite3.connect(legacy_db).execute("SELECT session_id, tool_name FROM events"))
+    assert rows == [("sess-legacy", "Read")]
+    assert not (home / ".local" / "share" / "pattern-tracker" / "events.db").exists()
+
+
+def test_pre_hook_is_a_noop_when_project_dir_unusable(tmp_path):
+    """A hook that can't resolve its project dir (no CLAUDE_PLUGIN_ROOT, no
+    dev-host source tree) must degrade to a silent no-op — exit 0, one
+    stderr line — never abort the tool call under `set -e`."""
+    home = tmp_path / "home"
+    home.mkdir()
+    db = tmp_path / "events.db"
+
+    env = os.environ.copy()
+    env.pop("PT_PROJECT_DIR", None)
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+    env["HOME"] = str(home)
+    env["PT_DB"] = str(db)
+
+    result = subprocess.run(
+        [str(HOOK)],
+        input=json.dumps({"session_id": "sess-noop", "tool_name": "Read"}),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "no-op" in result.stderr
+    assert not db.exists()
 
 
 def test_migrate_events_tolerates_concurrent_duplicate_alter(tmp_path):
