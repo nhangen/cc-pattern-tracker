@@ -190,10 +190,29 @@ def _normalize_category(raw):
     return raw.strip().lower().replace("_", "-")
 
 
+def _env_session_id() -> str | None:
+    """Session id from the calling process's environment, in priority order.
+
+    `CLAUDE_SESSION_ID` never actually exists — it was an assumption baked
+    into this module and the pr-review-panel skill docs, not a variable
+    Claude Code sets. Verified against a live Claude Code session (#16):
+    `CLAUDE_SESSION_ID` is unset while `CLAUDE_CODE_SESSION_ID` carries the
+    session's real id on every Bash-tool-spawned process. That's why 1057 of
+    1606 production `findings` rows landed with a NULL session_id — every
+    `finding-add` invocation from inside Claude Code was checking a variable
+    that was never going to be set, silently falling through to
+    `no_session_id` instead of erroring.
+
+    `CLAUDE_SESSION_ID` is checked first only so a caller (or a test) that
+    deliberately exports it as an override still wins."""
+    return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+
+
 def _detect_session_id(cwd: str, db_path: str | None = None) -> str | None:
     """Best-effort session attribution for non-Claude-Code harnesses.
 
-    Claude Code exports $CLAUDE_SESSION_ID, so that path never lands here.
+    Claude Code sessions are attributed via `_env_session_id()` before this
+    function is ever called, so this path never lands here for them.
     OpenCode sets OPENCODE=1 but no session env var; its sessions live in
     ~/.local/share/opencode/opencode.db keyed by project directory, and the
     most-recently-updated row for this cwd is the live one. Anything else
@@ -250,7 +269,7 @@ def cmd_finding_add(args):
     else:
         raw_lines = [l for l in sys.stdin if l.strip()]
 
-    session_id_default = os.environ.get("CLAUDE_SESSION_ID")
+    session_id_default = _env_session_id()
     if not session_id_default:
         session_id_default = _detect_session_id(os.getcwd())
     inserted = skipped = updated = invalid = no_session_id = 0

@@ -257,11 +257,16 @@ def test_finding_add_normalizes_category(tmp_path):
 def test_finding_add_warns_when_session_id_unset(tmp_path, monkeypatch):
     """When neither the row nor any harness detection provides a session_id,
     surface a stderr warning and tally — silent NULL session_id breaks the
-    cost-by-failure fusion view because the join key is missing."""
+    cost-by-failure fusion view because the join key is missing.
+
+    Must strip CLAUDE_CODE_SESSION_ID too, not just the (nonexistent)
+    CLAUDE_SESSION_ID — this test runs inside a real Claude Code session,
+    which always sets CLAUDE_CODE_SESSION_ID (see #16), and leaving it in
+    the env would make this arm pass or fail depending on where it's run."""
     db = tmp_path / "events.db"
     finding = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "no session"}
     env = {k: v for k, v in __import__("os").environ.items()
-           if k not in ("CLAUDE_SESSION_ID", "OPENCODE")}
+           if k not in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "OPENCODE")}
     out = subprocess.run(
         ["python", "-m", "lib.pt_cli", "finding-add", "--db", str(db)],
         cwd=REPO, capture_output=True, text=True,
@@ -270,6 +275,50 @@ def test_finding_add_warns_when_session_id_unset(tmp_path, monkeypatch):
     assert "inserted=1" in out.stdout
     assert "no_session_id=1" in out.stdout
     assert "session_id" in out.stderr.lower()
+
+
+def test_finding_add_attributes_from_claude_code_session_id_env(tmp_path):
+    """#16 root cause: Claude Code never exports $CLAUDE_SESSION_ID — that
+    name was a wrong assumption baked into pt_cli.py and the pr-review-panel
+    skill docs. The real variable every Bash-tool-spawned process gets is
+    $CLAUDE_CODE_SESSION_ID (verified against a live session). Production
+    evidence: 1057 of 1606 findings rows have a NULL session_id because every
+    finding-add call from inside Claude Code checked the wrong variable name
+    and silently fell through to no_session_id instead of attributing."""
+    db = tmp_path / "events.db"
+    finding = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "cc session"}
+    env = {k: v for k, v in __import__("os").environ.items()
+           if k not in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "OPENCODE")}
+    env["CLAUDE_CODE_SESSION_ID"] = "cc-session-abc123"
+    out = subprocess.run(
+        ["python", "-m", "lib.pt_cli", "finding-add", "--db", str(db)],
+        cwd=REPO, capture_output=True, text=True,
+        input=json.dumps(finding) + "\n", env=env, check=True,
+    )
+    assert "inserted=1" in out.stdout
+    assert "no_session_id=0" in out.stdout
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT session_id FROM findings").fetchone()[0] == "cc-session-abc123"
+
+
+def test_finding_add_prefers_explicit_claude_session_id_override(tmp_path):
+    """CLAUDE_SESSION_ID (a manual override, e.g. from a test harness standing
+    in for Claude Code) must still win over CLAUDE_CODE_SESSION_ID when both
+    are set — priority order, not either-one-wins."""
+    db = tmp_path / "events.db"
+    finding = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "override"}
+    env = {k: v for k, v in __import__("os").environ.items()
+           if k not in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "OPENCODE")}
+    env["CLAUDE_SESSION_ID"] = "explicit-override"
+    env["CLAUDE_CODE_SESSION_ID"] = "cc-session-abc123"
+    out = subprocess.run(
+        ["python", "-m", "lib.pt_cli", "finding-add", "--db", str(db)],
+        cwd=REPO, capture_output=True, text=True,
+        input=json.dumps(finding) + "\n", env=env, check=True,
+    )
+    assert "inserted=1" in out.stdout
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT session_id FROM findings").fetchone()[0] == "explicit-override"
 
 
 def test_finding_add_updates_severity_on_revision(tmp_path):
