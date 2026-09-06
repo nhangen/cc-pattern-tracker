@@ -29,11 +29,27 @@ def test_summary_reports_counts(tmp_path):
     assert "Read" in out.stdout and "Edit" in out.stdout
 
 
-def _run(*argv, cwd=REPO, stdin=None, check=True):
+def _run(*argv, cwd=REPO, stdin=None, check=True, env=None):
     return subprocess.run(
         ["python", "-m", "lib.pt_cli", *argv],
-        cwd=cwd, capture_output=True, text=True, input=stdin, check=check,
+        cwd=cwd, capture_output=True, text=True, input=stdin, check=check, env=env,
     )
+
+
+def _isolated_env(tmp_path, **overrides):
+    """A clean env for tests exercising the no-`--db` default-resolution path
+    (issue #25): strips PT_DB/XDG_DATA_HOME from the real environment and points
+    HOME at a tmp dir, so the test's own fixtures are the only inputs to
+    resolve_db_path()."""
+    import os
+    env = os.environ.copy()
+    for key in ("PT_DB", "XDG_DATA_HOME"):
+        env.pop(key, None)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env["HOME"] = str(home)
+    env.update(overrides)
+    return env
 
 
 def test_finding_add_inserts_from_stdin(tmp_path):
@@ -366,3 +382,48 @@ def test_findings_export_dumps_jsonl(tmp_path):
     lines = [json.loads(l) for l in out_path.read_text().splitlines() if l.strip()]
     assert [l["summary"] for l in lines] == ["first", "second"]
     assert all(l["finding_id"] for l in lines)
+
+
+# --- issue #25: no-`--db` default resolution matches the hooks' rule -------
+
+
+def test_summary_with_no_db_flag_errors_when_default_is_missing(tmp_path):
+    env = _isolated_env(tmp_path)
+    out = _run("summary", cwd=REPO, env=env, check=False)
+    assert out.returncode != 0
+    assert "no database" in out.stderr.lower()
+    # Never silently create at a cwd-relative "data/events.db" under REPO.
+    assert not (REPO / "data" / "events.db").exists()
+
+
+def test_findings_export_with_no_db_flag_errors_when_default_is_missing(tmp_path):
+    env = _isolated_env(tmp_path)
+    out = _run("findings-export", "--out", str(tmp_path / "out.jsonl"), cwd=REPO, env=env, check=False)
+    assert out.returncode != 0
+    assert "no database" in out.stderr.lower()
+    assert not (REPO / "data" / "events.db").exists()
+
+
+def test_summary_with_no_db_flag_uses_pt_db_env(tmp_path):
+    db = tmp_path / "pt_db_events.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(SCHEMA.read_text())
+    conn.execute(
+        "INSERT INTO events (event_id, session_id, timestamp, tool_name, exit_code, post_complete) "
+        "VALUES ('e1','s1',1,'Read',0,1)"
+    )
+    conn.commit()
+    env = _isolated_env(tmp_path, PT_DB=str(db))
+    out = _run("summary", cwd=REPO, env=env)
+    assert "Total events: 1" in out.stdout
+
+
+def test_finding_add_with_no_db_flag_creates_at_pt_db_env_path(tmp_path):
+    # Write-side: no --db, but PT_DB is set — create there, never cwd-relative.
+    db = tmp_path / "pt_db_events.db"
+    env = _isolated_env(tmp_path, PT_DB=str(db))
+    finding = {"pr_url": "https://x/1", "severity": "HIGH", "summary": "s"}
+    out = _run("finding-add", cwd=REPO, env=env, stdin=json.dumps(finding) + "\n")
+    assert "inserted=1" in out.stdout
+    assert db.exists()
+    assert not (REPO / "data" / "events.db").exists()

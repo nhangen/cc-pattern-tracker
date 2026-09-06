@@ -14,7 +14,15 @@ Three phases. Each ships independently.
 
 ### Phase 1 — Feature snapshotter
 
-Two Claude Code hooks (`PreToolUse` and `PostToolUse`) write a wide state row per tool call to `data/events.db` (SQLite). The schema is intentionally *narrow* — it captures the **delta** features that aren't already in `~/.claude/__store.db`:
+Two Claude Code hooks (`PreToolUse` and `PostToolUse`) write a wide state row per tool call to `events.db` (SQLite). The schema is intentionally *narrow* — it captures the **delta** features that aren't already in `~/.claude/__store.db`:
+
+**Where `events.db` lives.** The hooks and the `pt` CLI resolve the same path, in this order — `lib/db_path.py` is the CLI's copy of the rule the hooks implement in bash:
+
+1. An explicit path wins outright — `PT_DB` for the hooks, `--db` for `pt`.
+2. `${XDG_DATA_HOME:-$HOME/.local/share}/pattern-tracker/events.db`.
+3. The legacy dev-tree path (`$HOME/ML-AI/claude/pattern-tracker/data/events.db`), but only when it exists and the XDG path doesn't — so an existing dev-host database keeps being found until the XDG one has data of its own.
+
+`pt` never falls back to a `data/events.db` relative to the current directory. A read command (`summary`, `export`, `findings-export`, `cost-by-failure`) with no `--db` and no database at the resolved path is an error, not an empty result — see "Known limitations" below for why.
 
 | Column | Source |
 |---|---|
@@ -206,6 +214,7 @@ prior_errors_count=3                     → confident_wrong_diagnosis      supp
 ## Known limitations
 
 - **`__store.db` is Claude Code's internal store.** This plugin reads from it but never writes, and never creates it. The schema (`session_id`, `timestamp`, `model`, `cost_usd`, `duration_ms`) is what's in place as of 4.x. It is **not populated on every host** — CLI-only hosts keep history in `projects/*.jsonl` and leave `__store.db` empty. When it's absent or has no `assistant_messages` table, `export`/`report` degrade gracefully (no model/cost enrichment) rather than crash.
+- **A relative `--db` default used to split the hooks from the CLI (#25).** Five `pt` subcommands defaulted `--db` to the cwd-relative string `data/events.db`, so running `pt summary` from the wrong directory silently created a fresh empty database instead of finding the one the hooks write to. Fixed by resolving through the same rule the hooks use (see "Where `events.db` lives" above); a read command with no `--db` and nothing at the resolved path now errors instead of reporting zero rows. An explicit `--db` to a path that doesn't exist yet still creates it there — that's a deliberate choice, not the bug.
 - **LLM judge cost.** ~$0.06/call shelling out to `claude --print` because the CLI ships ~100K tokens of internal context per invocation. For a 1000-call training set: ~$60. (No direct-SDK/API-key path — subscription auth only.)
 - **Phrase detector recall depends on your correction style.** If you correct via redirection ("instead of X try Y") rather than vocal pushback ("stop", "no"), the phrase detector will find nothing. The LLM judge is the fallback in that case.
 - **Subagent JSONLs are scanned.** Required to catch corrections directed at subagents (where most live). jq-truncated reads only — full files are never loaded into Python or context, per the `no-cat-subagent-jsonl` convention.
@@ -221,9 +230,12 @@ cd ~/ML-AI/claude/pattern-tracker
 # Tests (72 currently)
 uv run --with pytest pytest tests/ -v   # or: pip install pytest && pytest tests/ -v
 
-# Run hooks locally without installing (manual smoke test)
-echo '{"session_id":"smoke-1","tool_name":"Read"}' | hooks/pre-tool-snapshot.sh
-sqlite3 data/events.db "SELECT * FROM events"
+# Run hooks locally without installing (manual smoke test). Point PT_DB at a
+# scratch file explicitly — the hooks and `pt` both resolve to the XDG/legacy
+# path otherwise (see "Where events.db lives" above), not a cwd-relative one.
+PT_DB=/tmp/pt-smoke.db
+echo '{"session_id":"smoke-1","tool_name":"Read"}' | PT_DB="$PT_DB" hooks/pre-tool-snapshot.sh
+sqlite3 "$PT_DB" "SELECT * FROM events"
 ```
 
 Source tree:

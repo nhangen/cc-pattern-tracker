@@ -16,6 +16,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from lib.db_path import resolve_db_path
+
 
 @dataclass
 class GroupRow:
@@ -215,7 +217,7 @@ def _fmt_tokens(n: int) -> str:
 
 
 def cmd_cost_by_failure(args) -> None:
-    db_path = Path(args.db)
+    db_path = resolve_db_path(args.db)
     if not db_path.exists():
         raise SystemExit(f"events DB not found at {db_path}")
 
@@ -287,8 +289,10 @@ def register(subparsers) -> None:
         "cost-by-failure",
         help="Join findings to token-scope per-session cost; group by category/severity or list top sessions.",
     )
-    p.add_argument("--db", default="data/events.db",
-                   help="pattern-tracker events DB (contains findings table).")
+    p.add_argument("--db", default=None,
+                   help="pattern-tracker events DB (contains findings table). "
+                        "Default: $PT_DB, else the XDG path the hooks use, else "
+                        "the legacy dev-tree DB when present (see lib/db_path.py).")
     p.add_argument("--token-scope-cli", default=None, dest="token_scope_cli",
                    help="Path to token-scope CLI (.ts run via bun, or executable). "
                         "Default: $TOKEN_SCOPE_CLI, then latest plugin cache, then PATH.")
