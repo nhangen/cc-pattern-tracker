@@ -2,7 +2,25 @@
 set -euo pipefail
 
 : "${HOME:?HOME must be set before pre-tool-snapshot.sh}"
-: "${PT_PROJECT_DIR:=${CLAUDE_PLUGIN_ROOT:-$HOME/ML-AI/claude/pattern-tracker}}"
+
+# Resolution order: an explicit PT_PROJECT_DIR wins outright; then
+# CLAUDE_PLUGIN_ROOT (the marketplace-install runtime); then this script's
+# own parent-of-hooks directory via BASH_SOURCE, so a clone checked out
+# anywhere still finds its own lib/ even when CLAUDE_PLUGIN_ROOT is unset
+# (e.g. a local dev install outside the marketplace runtime); and only then
+# the legacy dev-host path as a last resort.
+if [ -z "${PT_PROJECT_DIR:-}" ]; then
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    PT_PROJECT_DIR="$CLAUDE_PLUGIN_ROOT"
+  else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)" || SCRIPT_DIR=""
+    if [ -n "$SCRIPT_DIR" ]; then
+      PT_PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+    else
+      PT_PROJECT_DIR="$HOME/ML-AI/claude/pattern-tracker"
+    fi
+  fi
+fi
 
 if [ -z "${PT_DB:-}" ]; then
   LEGACY_PT_DB="$HOME/ML-AI/claude/pattern-tracker/data/events.db"

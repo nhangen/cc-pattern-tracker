@@ -265,18 +265,19 @@ def test_pre_hook_falls_back_to_legacy_db_when_present(tmp_path):
 
 
 def test_pre_hook_is_a_noop_when_project_dir_unusable(tmp_path):
-    """A hook that can't resolve its project dir (no CLAUDE_PLUGIN_ROOT, no
-    dev-host source tree) must degrade to a silent no-op — exit 0, one
-    stderr line — never abort the tool call under `set -e`."""
+    """A hook whose resolved project dir doesn't exist (an explicit but stale
+    PT_PROJECT_DIR — the case the BASH_SOURCE fallback can't paper over,
+    since an explicit value wins outright) must degrade to a silent no-op —
+    exit 0, one stderr line — never abort the tool call under `set -e`."""
     home = tmp_path / "home"
     home.mkdir()
     db = tmp_path / "events.db"
 
     env = os.environ.copy()
-    env.pop("PT_PROJECT_DIR", None)
     env.pop("CLAUDE_PLUGIN_ROOT", None)
     env["HOME"] = str(home)
     env["PT_DB"] = str(db)
+    env["PT_PROJECT_DIR"] = str(tmp_path / "does-not-exist")
 
     result = subprocess.run(
         [str(HOOK)],
@@ -288,6 +289,35 @@ def test_pre_hook_is_a_noop_when_project_dir_unusable(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "no-op" in result.stderr
     assert not db.exists()
+
+
+def test_pre_hook_resolves_via_bash_source_when_run_from_a_relocated_clone(tmp_path):
+    """Auditor HIGH finding: outside the marketplace runtime CLAUDE_PLUGIN_ROOT
+    is unset, so a hook run from a clone at a non-default path (a local dev
+    install, or a git worktree) must still find its own lib/ via BASH_SOURCE
+    rather than falling through to the (absent) legacy dev-host path."""
+    relocated = _copy_plugin_root(tmp_path / "some" / "other" / "location" / "clone")
+    home = tmp_path / "home"
+    home.mkdir()
+    db = tmp_path / "events.db"
+
+    env = os.environ.copy()
+    env.pop("PT_PROJECT_DIR", None)
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+    env["HOME"] = str(home)
+    env["PT_DB"] = str(db)
+
+    hook = relocated / "hooks" / "pre-tool-snapshot.sh"
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps({"session_id": "sess-relocated", "tool_name": "Read"}),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    rows = list(sqlite3.connect(db).execute("SELECT session_id, tool_name FROM events"))
+    assert rows == [("sess-relocated", "Read")]
 
 
 def test_migrate_events_tolerates_concurrent_duplicate_alter(tmp_path):
