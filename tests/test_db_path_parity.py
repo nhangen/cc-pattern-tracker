@@ -89,34 +89,11 @@ def test_parity_xdg_default_when_nothing_preexists(tmp_path, monkeypatch):
     assert _python_resolved(env, monkeypatch) == expected
 
 
-def test_parity_legacy_fallback_when_xdg_absent_and_legacy_present(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    xdg = tmp_path / "xdg"
-    home.mkdir()
-    xdg.mkdir()
-    legacy = home / "ML-AI" / "claude" / "pattern-tracker" / "data" / "events.db"
-    _make_db(legacy)  # pre-exists; the XDG default does not
-    env = {"HOME": str(home), "XDG_DATA_HOME": str(xdg)}
-
-    result = _run_hook(env)
-    assert result.returncode == 0, result.stderr
-    assert (xdg / "pattern-tracker" / "events.db").exists() is False, (
-        "bash side wrote the XDG default instead of falling back to the legacy DB"
-    )
-    # The hook writes into the legacy DB in this case.
-    rows = list(sqlite3.connect(legacy).execute("SELECT session_id FROM events"))
-    assert rows == [("parity-sess",)]
-
-    assert _python_resolved(env, monkeypatch) == legacy
-
-
 def test_parity_xdg_default_wins_when_both_preexist(tmp_path, monkeypatch):
     home = tmp_path / "home"
     xdg = tmp_path / "xdg"
     home.mkdir()
     xdg.mkdir()
-    legacy = home / "ML-AI" / "claude" / "pattern-tracker" / "data" / "events.db"
-    _make_db(legacy)
     default = xdg / "pattern-tracker" / "events.db"
     _make_db(default)
     env = {"HOME": str(home), "XDG_DATA_HOME": str(xdg)}

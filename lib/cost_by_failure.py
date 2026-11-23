@@ -40,13 +40,16 @@ def _resolve_token_scope_cli(override: str | None) -> list[str]:
     env = os.environ.get("TOKEN_SCOPE_CLI")
     if env:
         return _bun_wrap(env)
-    cache = Path.home() / ".claude" / "plugins" / "cache" / "nhangen-tools" / "token-scope"
-    if cache.exists():
-        versions = sorted(p for p in cache.iterdir() if p.is_dir())
-        if versions:
-            cli = versions[-1] / "src" / "cli.ts"
-            if cli.exists():
-                return _bun_wrap(str(cli))
+    cache_root = Path.home() / ".claude" / "plugins" / "cache"
+    if cache_root.exists():
+        for cache in sorted(cache_root.iterdir()):
+            scope = cache / "token-scope"
+            if scope.is_dir():
+                versions = sorted(p for p in scope.iterdir() if p.is_dir())
+                if versions:
+                    cli = versions[-1] / "src" / "cli.ts"
+                    if cli.exists():
+                        return _bun_wrap(str(cli))
     on_path = shutil.which("token-scope")
     if on_path:
         return [on_path]

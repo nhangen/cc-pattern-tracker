@@ -228,11 +228,11 @@ def test_pre_hook_db_default_does_not_land_under_plugin_cache(tmp_path):
     assert rows == [("sess-host2", "Bash")]
 
 
-def test_pre_hook_falls_back_to_legacy_db_when_present(tmp_path):
-    """Issue #22: existing dev-host data at the legacy
-    ~/ML-AI/claude/pattern-tracker/data/events.db location must not be
-    orphaned by the PT_DB default move — it's read as a fallback when the
-    new XDG-style location doesn't yet have a database of its own."""
+def test_pre_hook_ignores_legacy_db_location(tmp_path):
+    """The legacy ~/ML-AI/claude/pattern-tracker/data/events.db location was
+    removed as a personal-artifact fallback; resolution is XDG-only. A DB
+    pre-existing at the old location must NOT pull writes away from the
+    durable XDG default."""
     plugin_root = _copy_plugin_root(tmp_path / "plugin_root")
     home = tmp_path / "home"
     legacy_dir = home / "ML-AI" / "claude" / "pattern-tracker" / "data"
@@ -240,7 +240,7 @@ def test_pre_hook_falls_back_to_legacy_db_when_present(tmp_path):
     legacy_db = legacy_dir / "events.db"
     legacy_conn = sqlite3.connect(legacy_db)
     legacy_conn.executescript((PROJECT_ROOT / "lib" / "schema.sql").read_text())
-    legacy_conn.close()  # pre-existing dev-host db the fallback must find
+    legacy_conn.close()  # pre-existing dev-host db the fallback must ignore
 
     env = os.environ.copy()
     env.pop("PT_PROJECT_DIR", None)
@@ -258,10 +258,12 @@ def test_pre_hook_falls_back_to_legacy_db_when_present(tmp_path):
         env=env,
     )
     assert result.returncode == 0, result.stderr
-    assert legacy_db.exists(), "legacy db location must be used as fallback"
-    rows = list(sqlite3.connect(legacy_db).execute("SELECT session_id, tool_name FROM events"))
+    expected_db = home / ".local" / "share" / "pattern-tracker" / "events.db"
+    assert expected_db.exists(), "XDG default must receive the write"
+    rows = list(sqlite3.connect(expected_db).execute("SELECT session_id, tool_name FROM events"))
     assert rows == [("sess-legacy", "Read")]
-    assert not (home / ".local" / "share" / "pattern-tracker" / "events.db").exists()
+    legacy_rows = list(sqlite3.connect(legacy_db).execute("SELECT COUNT(*) FROM events"))
+    assert legacy_rows == [(0,)], "legacy location must be ignored"
 
 
 def test_pre_hook_is_a_noop_when_project_dir_unusable(tmp_path):

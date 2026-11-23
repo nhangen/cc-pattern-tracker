@@ -20,7 +20,6 @@ Two Claude Code hooks (`PreToolUse` and `PostToolUse`) write a wide state row pe
 
 1. An explicit path wins outright — `PT_DB` for the hooks, `--db` for `pt`.
 2. `${XDG_DATA_HOME:-$HOME/.local/share}/pattern-tracker/events.db`.
-3. The legacy dev-tree path (`$HOME/ML-AI/claude/pattern-tracker/data/events.db`), but only when it exists and the XDG path doesn't — so an existing dev-host database keeps being found until the XDG one has data of its own.
 
 `pt` never falls back to a `data/events.db` relative to the current directory. A read command (`summary`, `export`, `findings-export`, `cost-by-failure`) with no `--db` and no database at the resolved path is an error, not an empty result — see "Known limitations" below for why.
 
@@ -128,7 +127,7 @@ Claude Code's JSONL session logs directly — no dependency on the deprecated
 `~/.claude/__store.db` snapshot.
 
 CLI resolution order: `--token-scope-cli`, then `$TOKEN_SCOPE_CLI`, then
-the latest version under `~/.claude/plugins/cache/nhangen-tools/token-scope/`,
+the latest version under `~/.claude/plugins/cache/<marketplace>/token-scope/`,
 then `token-scope` on `$PATH`. `.ts` paths are invoked via `bun`.
 
 The `out_tok` column is token-scope's per-session **output_tokens** total
@@ -225,7 +224,7 @@ prior_errors_count=3                     → confident_wrong_diagnosis      supp
 ```bash
 # Runtime needs no venv — hooks and `pt` run on the system python3 (>=3.9),
 # stdlib only. A venv is only needed to run the test suite (pytest).
-cd ~/ML-AI/claude/pattern-tracker
+cd path/to/pattern-tracker
 
 # Tests (72 currently)
 uv run --with pytest pytest tests/ -v   # or: pip install pytest && pytest tests/ -v

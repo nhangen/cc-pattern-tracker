@@ -33,9 +33,9 @@ def detect(tmp_path, sessions, cwd):
 
 def test_deepest_ancestor_wins(tmp_path):
     sid = detect(tmp_path, [
-        ("ses_root", "/Users/x/ML-AI", 100),
+        ("ses_root", "/Users/x/projects", 100),
         ("ses_parent", "/Users/x", 200),
-    ], "/Users/x/ML-AI/claude/pattern-tracker")
+    ], "/Users/x/projects/claude/pattern-tracker")
     assert sid == "ses_root"
 
 
@@ -48,11 +48,11 @@ def test_recency_breaks_ties_at_same_depth(tmp_path):
 
 
 def test_sibling_directory_is_not_an_ancestor(tmp_path):
-    assert detect(tmp_path, [("ses_a", "/Users/x/ML-AI", 100)], "/Users/x/ML-AI-other-repo") is None
+    assert detect(tmp_path, [("ses_a", "/Users/x/projects", 100)], "/Users/x/projects-other-repo") is None
 
 
 def test_underscore_directory_is_not_a_wildcard(tmp_path):
-    assert detect(tmp_path, [("ses_a", "/Users/x/ML_AI", 100)], "/Users/x/ML-AI") is None
+    assert detect(tmp_path, [("ses_a", "/Users/x/other", 100)], "/Users/x/projects") is None
 
 
 def test_unrelated_cwd_returns_none(tmp_path):

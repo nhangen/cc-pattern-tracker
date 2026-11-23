@@ -9,7 +9,7 @@ SETTINGS="$HOME/.claude/settings.json"
 # Resolve the install target the same way the hooks themselves do: the
 # installed plugin cache first (CLAUDE_PLUGIN_ROOT), then wherever this
 # script actually lives (so `bash hooks/install.sh` from a source clone
-# still works), and only then the dev-host source tree as a last resort.
+# still works).
 PROJECT="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$PROJECT" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)" || SCRIPT_DIR=""
@@ -17,9 +17,11 @@ if [ -z "$PROJECT" ]; then
     PROJECT="$(dirname "$SCRIPT_DIR")"
   fi
 fi
-if [ -z "$PROJECT" ] || [ ! -d "$PROJECT" ]; then
-  PROJECT="$HOME/ML-AI/claude/pattern-tracker"
-fi
+
+[ -n "$PROJECT" ] && [ -d "$PROJECT" ] || {
+  echo "cannot resolve plugin root (set CLAUDE_PLUGIN_ROOT or run hooks/install.sh from the checkout)"
+  exit 1
+}
 
 [ -f "$SETTINGS" ] || { echo "settings.json missing at $SETTINGS"; exit 1; }
 

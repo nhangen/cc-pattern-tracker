@@ -3,7 +3,7 @@
   "version": "0.3.0",
   "description": "Logs feature + outcome rows per tool call to SQLite for offline pattern mining.",
   "author": {
-    "name": "nhangen"
+    "name": "pattern-tracker"
   },
   "license": "MIT",
   "keywords": ["analytics", "ml", "training-data", "hooks"]

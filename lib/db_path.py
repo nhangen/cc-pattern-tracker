@@ -12,10 +12,6 @@ Resolution order:
 1. `explicit` (e.g. a CLI `--db` flag) wins outright.
 2. Else `$PT_DB` wins outright.
 3. Else the XDG default: `${XDG_DATA_HOME:-$HOME/.local/share}/pattern-tracker/events.db`.
-4. Else the legacy dev-tree DB (`$HOME/ML-AI/claude/pattern-tracker/data/events.db`),
-   but only when it exists AND the XDG default does not — the same tiebreak the
-   hooks use so an existing dev-host database keeps being found without a fresh
-   empty file winning by default-path alone.
 """
 from __future__ import annotations
 
@@ -34,9 +30,4 @@ def resolve_db_path(explicit: str | None = None) -> Path:
     home = Path(os.environ.get("HOME") or Path.home())
     xdg_data_home = os.environ.get("XDG_DATA_HOME")
     base = Path(xdg_data_home) if xdg_data_home else home / ".local" / "share"
-    default = base / "pattern-tracker" / "events.db"
-    legacy = home / "ML-AI" / "claude" / "pattern-tracker" / "data" / "events.db"
-
-    if legacy.exists() and not default.exists():
-        return legacy
-    return default
+    return base / "pattern-tracker" / "events.db"
